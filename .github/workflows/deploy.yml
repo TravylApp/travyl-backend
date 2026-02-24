@@ -1,0 +1,30 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main, develop]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 35.175.135.72
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            if [ "${{ github.ref_name }}" = "main" ]; then
+              cd /home/ec2-user/travyl-backend-prod
+              git pull origin main
+              source venv/bin/activate
+              pip install -r requirements.txt
+              sudo systemctl restart travyl-api-prod
+            else
+              cd /home/ec2-user/travyl-backend-dev
+              git pull origin develop
+              source venv/bin/activate
+              pip install -r requirements.txt
+              sudo systemctl restart travyl-api-dev
+            fi
