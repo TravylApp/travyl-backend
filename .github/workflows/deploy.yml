@@ -45,6 +45,22 @@ jobs:
               sudo systemctl restart travyl-api-dev
             fi
 
+      - name: Verify deployment
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            URL="https://api.gotravyl.com/health"
+          else
+            URL="https://api.dev.gotravyl.com/health"
+          fi
+          echo "Checking $URL ..."
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
+          echo "Health check returned: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Deployment health check failed (HTTP $STATUS)"
+            exit 1
+          fi
+
       - name: Close SSH for runner
         if: always()
         run: |
