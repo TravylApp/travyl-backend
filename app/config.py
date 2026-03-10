@@ -16,10 +16,10 @@ class Settings(BaseSettings):
     aws_bearer_token: Optional[str] = None
 
     # Budget tier base rates (USD/day before cost-of-living adjustment)
-    budget_base_usd: int
-    moderate_base_usd: int
-    comfortable_base_usd: int
-    luxury_base_usd: int
+    budget_base_usd: int = 45
+    moderate_base_usd: int = 105
+    comfortable_base_usd: int = 225
+    luxury_base_usd: int = 400
 
     class Config:
         env_file = ".env"

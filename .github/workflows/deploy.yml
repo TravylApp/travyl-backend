@@ -30,20 +30,68 @@ jobs:
           host: 35.175.135.72
           username: ec2-user
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: SUPABASE_URL,SUPABASE_ANON_KEY,SUPABASE_SERVICE_KEY,SUPABASE_JWT_SECRET,AWS_BEARER_TOKEN,BUDGET_BASE_USD,MODERATE_BASE_USD,COMFORTABLE_BASE_USD,LUXURY_BASE_USD
           script: |
             if [ "${{ github.ref_name }}" = "main" ]; then
-              cd /home/ec2-user/travyl-backend-prod
-              git pull origin main
-              source venv/bin/activate
-              pip install -r requirements.txt
-              sudo systemctl restart travyl-api-prod
+              DEPLOY_DIR=/home/ec2-user/travyl-backend-prod
+              BRANCH=main
+              SERVICE=travyl-api-prod
+              ORIGINS='["https://gotravyl.com","http://localhost:3000"]'
             else
-              cd /home/ec2-user/travyl-backend-dev
-              git pull origin develop
-              source venv/bin/activate
-              pip install -r requirements.txt
-              sudo systemctl restart travyl-api-dev
+              DEPLOY_DIR=/home/ec2-user/travyl-backend-dev
+              BRANCH=develop
+              SERVICE=travyl-api-dev
+              ORIGINS='["https://dev.gotravyl.com","http://localhost:3000"]'
             fi
+
+            cd $DEPLOY_DIR
+            git pull origin $BRANCH
+            source venv/bin/activate
+            pip install -r requirements.txt
+
+            cat > .env <<ENVEOF
+SUPABASE_URL=${SUPABASE_URL}
+SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
+ALLOWED_ORIGINS=${ORIGINS}
+AWS_REGION=us-east-1
+BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
+AWS_BEARER_TOKEN=${AWS_BEARER_TOKEN}
+BUDGET_BASE_USD=${BUDGET_BASE_USD}
+MODERATE_BASE_USD=${MODERATE_BASE_USD}
+COMFORTABLE_BASE_USD=${COMFORTABLE_BASE_USD}
+LUXURY_BASE_USD=${LUXURY_BASE_USD}
+ENVEOF
+            chmod 600 .env
+
+            sudo systemctl restart $SERVICE
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          AWS_BEARER_TOKEN: ${{ secrets.AWS_BEARER_TOKEN }}
+          BUDGET_BASE_USD: ${{ secrets.BUDGET_BASE_USD }}
+          MODERATE_BASE_USD: ${{ secrets.MODERATE_BASE_USD }}
+          COMFORTABLE_BASE_USD: ${{ secrets.COMFORTABLE_BASE_USD }}
+          LUXURY_BASE_USD: ${{ secrets.LUXURY_BASE_USD }}
+
+      - name: Verify deployment
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            URL="https://api.gotravyl.com/health"
+          else
+            URL="https://api.dev.gotravyl.com/health"
+          fi
+          echo "Checking $URL ..."
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
+          echo "Health check returned: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Deployment health check failed (HTTP $STATUS)"
+            exit 1
+          fi
 
       - name: Close SSH for runner
         if: always()
