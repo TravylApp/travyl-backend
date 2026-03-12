@@ -32,18 +32,43 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             if [ "${{ github.ref_name }}" = "main" ]; then
-              cd /home/ec2-user/travyl-backend-prod
-              git pull origin main
-              source venv/bin/activate
-              pip install -r requirements.txt
-              sudo systemctl restart travyl-api-prod
+              DEPLOY_DIR=/home/ec2-user/travyl-backend-prod
+              BRANCH=main
+              SERVICE=travyl-api-prod
+              SECRET_NAME=travyl/prod
             else
-              cd /home/ec2-user/travyl-backend-dev
-              git pull origin develop
-              source venv/bin/activate
-              pip install -r requirements.txt
-              sudo systemctl restart travyl-api-dev
+              DEPLOY_DIR=/home/ec2-user/travyl-backend-dev
+              BRANCH=develop
+              SERVICE=travyl-api-dev
+              SECRET_NAME=travyl/staging
             fi
+
+            cd $DEPLOY_DIR
+            git pull origin $BRANCH
+            source venv/bin/activate
+            pip install -r requirements.txt
+
+            # single env var tells the app which secret to load
+            echo "AWS_SECRET_NAME=${SECRET_NAME}" > .env
+            chmod 600 .env
+
+            sudo systemctl restart $SERVICE
+
+      - name: Verify deployment
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            URL="https://api.gotravyl.com/health"
+          else
+            URL="https://api.dev.gotravyl.com/health"
+          fi
+          echo "Checking $URL ..."
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
+          echo "Health check returned: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Deployment health check failed (HTTP $STATUS)"
+            exit 1
+          fi
 
       - name: Close SSH for runner
         if: always()
