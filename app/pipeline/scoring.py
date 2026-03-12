@@ -28,7 +28,7 @@ _INTEREST_BOOST = {
 
 _BUDGET_PRICE_TARGET = {"budget": 1, "moderate": 2, "comfortable": 3, "luxury": 4}
 
-_PACE_LIMITS = {"relaxed": 4, "moderate": 6, "packed": 9}
+PACE_RANGES = {"relaxed": (2, 4), "moderate": (3, 5), "packed": (4, 7)}
 
 
 def _score_poi(poi: POI, interests: set[str], budget_level: str | None) -> float:
@@ -81,16 +81,13 @@ def _score_poi(poi: POI, interests: set[str], budget_level: str | None) -> float
 
 def _filter_restaurants(
     pois: list[POI],
-    cuisine_prefs: list[str],
     avoid_cuisines: list[str],
-    dietary: list[str],
 ) -> list[POI]:
-    """Filter restaurant-category POIs by cuisine and dietary preferences."""
-    if not cuisine_prefs and not avoid_cuisines and not dietary:
+    """Filter restaurant-category POIs by cuisine avoidance list."""
+    if not avoid_cuisines:
         return pois
 
     avoid_lower = {c.lower() for c in avoid_cuisines}
-    pref_lower = {c.lower() for c in cuisine_prefs}
 
     filtered = []
     for poi in pois:
@@ -99,14 +96,11 @@ def _filter_restaurants(
             continue
 
         cuisine = (poi.cuisine or "").lower()
-
-        # skip avoided cuisines
         if cuisine and any(a in cuisine for a in avoid_lower):
             continue
 
         filtered.append(poi)
 
-    # boost preferred cuisines via score (handled in _score_poi indirectly via tags)
     return filtered
 
 
@@ -125,12 +119,7 @@ def score_and_filter(
         p for p in acquisition.pois
         if p.category not in avoid_cats and p.subcategory not in avoid_cats
     ]
-    pois = _filter_restaurants(
-        pois,
-        extraction.meals.cuisine_preferences,
-        extraction.meals.avoid_cuisines,
-        extraction.constraints.dietary_restrictions,
-    )
+    pois = _filter_restaurants(pois, extraction.meals.avoid_cuisines)
 
     # score
     scored = [(poi, _score_poi(poi, interests, budget_level)) for poi in pois]
@@ -138,7 +127,7 @@ def score_and_filter(
 
     # cap: enough POIs for the scheduler to fill all days
     num_days = extraction.duration_days or 1
-    max_per_day = _PACE_LIMITS.get(pace, 6)
+    max_per_day = PACE_RANGES.get(pace, (3, 5))[1]
     cap = min(max_per_day * num_days * 2, 50)  # 2x headroom for the solver
 
     # ensure category diversity — don't let attractions crowd out restaurants
