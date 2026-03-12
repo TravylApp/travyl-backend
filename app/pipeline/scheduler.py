@@ -5,10 +5,11 @@ from datetime import datetime, timedelta
 
 from ortools.sat.python import cp_model
 
-from app.pipeline.scoring import PACE_LIMITS
 from app.schemas import DayPlan, DayWeather, POI, ScheduleSlot, TripExtraction
 
 log = logging.getLogger(__name__)
+
+_PACE_LIMITS = {"relaxed": 4, "moderate": 6, "packed": 9}
 
 # average travel time estimate (min) used in the assignment model
 # actual travel times are applied during ordering
@@ -72,17 +73,15 @@ def _slot_restaurants(ordered: list[POI], day_start: int) -> list[POI]:
     for poi in non_restaurants:
         # insert lunch restaurant before afternoon activities
         if not lunch_placed and restaurants and current_min >= 720:  # noon
-            placed = restaurants.pop(0)
-            result.append(placed)
+            result.append(restaurants.pop(0))
             lunch_placed = True
-            current_min += placed.visit_duration_min + _AVG_TRAVEL_MIN
+            current_min += restaurants[0].visit_duration_min + _AVG_TRAVEL_MIN if restaurants else 75
 
         # insert dinner restaurant in the evening
         if not dinner_placed and restaurants and current_min >= 1110:  # 18:30
-            placed = restaurants.pop(0)
-            result.append(placed)
+            result.append(restaurants.pop(0))
             dinner_placed = True
-            current_min += placed.visit_duration_min + _AVG_TRAVEL_MIN
+            current_min += 75
 
         result.append(poi)
         current_min += poi.visit_duration_min + _AVG_TRAVEL_MIN
@@ -200,7 +199,7 @@ def schedule(
     """Build a day-by-day itinerary from scored POIs."""
     num_days = extraction.duration_days or 1
     pace = extraction.pace
-    max_per_day = PACE_LIMITS.get(pace, 6)
+    max_per_day = _PACE_LIMITS.get(pace, 6)
 
     day_start = _parse_time(extraction.constraints.daily_start_time, "09:00")
     day_end = _parse_time(extraction.constraints.daily_end_time, "21:00")
