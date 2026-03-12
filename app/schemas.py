@@ -88,6 +88,7 @@ class ExtractionResponse(BaseModel):
 
 
 
+
 # --- Stage 2: Data Acquisition output models ---
 
 class POI(BaseModel):
@@ -174,10 +175,30 @@ class AcquisitionResult(BaseModel):
     destination_photo_url: str | None = None
 
 
-# --- Pipeline response ---
+# --- Stage 4: Scheduler output models ---
+
+class ScheduleSlot(BaseModel):
+    poi: POI
+    start_time: str  # "09:00"
+    end_time: str  # "10:30"
+    travel_from_prev_min: int = 0
+
+
+class DayPlan(BaseModel):
+    day: int
+    date: str
+    slots: list[ScheduleSlot] = []
+    weather: DayWeather | None = None
+
+
+# --- Final pipeline response ---
 
 class PlanResponse(BaseModel):
     status: Literal["complete", "needs_clarification"]
     extracted: TripExtraction | None = None
     questions: list[dict] = []
     data: AcquisitionResult | None = None
+    itinerary: list[DayPlan] = []
+    hotels: list[HotelOption] = []
+    flights: list[FlightOption] = []
+    destination_photo_url: str | None = None
