@@ -36,12 +36,12 @@ jobs:
               DEPLOY_DIR=/home/ec2-user/travyl-backend-prod
               BRANCH=main
               SERVICE=travyl-api-prod
-              ORIGINS='["https://gotravyl.com","http://localhost:3000"]'
+              SECRET_NAME=travyl/prod
             else
               DEPLOY_DIR=/home/ec2-user/travyl-backend-dev
               BRANCH=develop
               SERVICE=travyl-api-dev
-              ORIGINS='["https://dev.gotravyl.com","http://localhost:3000"]'
+              SECRET_NAME=travyl/staging
             fi
 
             cd $DEPLOY_DIR
@@ -49,33 +49,11 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt
 
-            cat > .env <<ENVEOF
-SUPABASE_URL=${SUPABASE_URL}
-SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
-SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
-ALLOWED_ORIGINS=${ORIGINS}
-AWS_REGION=us-east-1
-BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
-AWS_BEARER_TOKEN=${AWS_BEARER_TOKEN}
-BUDGET_BASE_USD=${BUDGET_BASE_USD}
-MODERATE_BASE_USD=${MODERATE_BASE_USD}
-COMFORTABLE_BASE_USD=${COMFORTABLE_BASE_USD}
-LUXURY_BASE_USD=${LUXURY_BASE_USD}
-ENVEOF
+            # single env var tells the app which secret to load
+            echo "AWS_SECRET_NAME=${SECRET_NAME}" > .env
             chmod 600 .env
 
             sudo systemctl restart $SERVICE
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
-          AWS_BEARER_TOKEN: ${{ secrets.AWS_BEARER_TOKEN }}
-          BUDGET_BASE_USD: ${{ secrets.BUDGET_BASE_USD }}
-          MODERATE_BASE_USD: ${{ secrets.MODERATE_BASE_USD }}
-          COMFORTABLE_BASE_USD: ${{ secrets.COMFORTABLE_BASE_USD }}
-          LUXURY_BASE_USD: ${{ secrets.LUXURY_BASE_USD }}
 
       - name: Verify deployment
         run: |
