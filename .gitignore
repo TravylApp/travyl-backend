@@ -1,4 +1,10 @@
 # Environment Variables
 .env
 
+# Python
+__pycache__/
+*.pyc
 
+# Claude
+*claude*
+*CLAUDE*
