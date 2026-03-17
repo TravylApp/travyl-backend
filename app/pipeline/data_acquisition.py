@@ -551,33 +551,7 @@ async def _serpapi(session: aiohttp.ClientSession, params: dict) -> dict | None:
         return None
 
 
-async def _fetch_serp_maps(
-    session: aiohttp.ClientSession,
-    extraction: TripExtraction,
-    query_type: str,
-) -> list[POI]:
-    city = extraction.destination.city
-    country = extraction.destination.country
-    cache_key = f"serp_maps:{city}:{country}:{query_type}"
-    cached = await _cget(cache_key)
-    if cached:
-        return cached
-
-    if query_type == "restaurants":
-        q = f"best restaurants in {city} {country}"
-    else:
-        q = f"things to do in {city} {country}"
-
-    lat, lng = extraction.destination.lat, extraction.destination.lng
-    data = await _serpapi(session, {
-        "engine": "google_maps",
-        "q": q,
-        "ll": f"@{lat},{lng},14z",
-        "hl": "en",
-    })
-    if not data:
-        return []
-
+def _parse_serp_maps_results(data: dict, query_type: str) -> list[POI]:
     pois: list[POI] = []
     for item in data.get("local_results", []):
         title = item.get("title")
@@ -617,6 +591,57 @@ async def _fetch_serp_maps(
             source="serpapi",
         )
         pois.append(poi)
+    return pois
+
+
+async def _fetch_serp_maps(
+    session: aiohttp.ClientSession,
+    extraction: TripExtraction,
+    query_type: str,
+) -> list[POI]:
+    city = extraction.destination.city
+    country = extraction.destination.country
+    cache_key = f"serp_maps:{city}:{country}:{query_type}"
+    cached = await _cget(cache_key)
+    if cached:
+        return cached
+
+    if query_type == "restaurants":
+        q = f"best restaurants in {city} {country}"
+    else:
+        q = f"things to do in {city} {country}"
+
+    lat, lng = extraction.destination.lat, extraction.destination.lng
+    data = await _serpapi(session, {
+        "engine": "google_maps",
+        "q": q,
+        "ll": f"@{lat},{lng},14z",
+        "hl": "en",
+    })
+
+    pois: list[POI] = _parse_serp_maps_results(data, query_type) if data else []
+
+    # cuisine-specific queries for restaurants
+    if query_type == "restaurants" and extraction.meals.cuisine_preferences:
+        cuisine_coros = [
+            _serpapi(session, {
+                "engine": "google_maps",
+                "q": f"best {cuisine} restaurants in {city} {country}",
+                "ll": f"@{lat},{lng},14z",
+                "hl": "en",
+            })
+            for cuisine in extraction.meals.cuisine_preferences[:5]
+        ]
+        cuisine_results = await asyncio.gather(*cuisine_coros, return_exceptions=True)
+
+        seen_ids = {p.id for p in pois}
+        for result in cuisine_results:
+            if isinstance(result, (Exception, type(None))):
+                continue
+            for poi in _parse_serp_maps_results(result, "restaurants"):
+                if poi.id not in seen_ids:
+                    seen_ids.add(poi.id)
+                    pois.append(poi)
 
     await _cset(cache_key, pois, _TTL_SERP)
     log.info("SerpAPI maps (%s): %d results for %s", query_type, len(pois), city)
