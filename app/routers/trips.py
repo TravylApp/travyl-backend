@@ -48,7 +48,7 @@ async def plan(request: ExtractionRequest):
     )
 
     # Stage 4: CP-SAT scheduler
-    itinerary = schedule(scored_pois, ext, travel_matrix, data.weather)
+    itinerary = schedule(scored_pois, ext, travel_matrix, data.weather, travel_mode=ext.travel_mode_preference)
 
     # Stage 5: response assembly
     return assemble(ext, data, itinerary)

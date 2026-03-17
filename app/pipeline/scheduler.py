@@ -636,6 +636,7 @@ def schedule(
     extraction: TripExtraction,
     travel_matrix: dict[str, dict[str, int]],
     weather: list[DayWeather],
+    travel_mode: str | None = None,
 ) -> list[DayPlan]:
     """Build a day-by-day itinerary from scored POIs using time-based scheduling."""
     t0 = _time.monotonic()
@@ -707,6 +708,7 @@ def schedule(
                 start_time=_minutes_to_hhmm(start_min),
                 end_time=_minutes_to_hhmm(start_min + poi.visit_duration_min),
                 travel_from_prev_min=travel,
+                travel_mode=travel_mode or "walking",
             ))
 
         plans.append(DayPlan(
