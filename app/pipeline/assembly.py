@@ -7,6 +7,7 @@ from timezonefinder import TimezoneFinder
 from app.schemas import (
     AcquisitionResult,
     DayPlan,
+    FlightOption,
     PlanResponse,
     TripExtraction,
 )
@@ -29,10 +30,7 @@ def assemble(
 
     # keep top 5 hotels and top 5 flights for the response
     hotels = sorted(hotels, key=lambda h: (h.rating or 0), reverse=True)[:5]
-    flights = sorted(
-        acquisition.flights,
-        key=lambda f: (f.price or float("inf"), f.duration_min),
-    )[:5]
+    flights = _filter_flights(acquisition.flights, extraction)[:5]
 
     # resolve destination timezone
     tz = None
@@ -68,3 +66,27 @@ def _filter_hotels_by_budget(hotels, budget_level: str, daily_estimate_usd: int)
 
     in_range = [h for h in hotels if h.price_per_night and lo <= h.price_per_night <= hi]
     return in_range if len(in_range) >= 3 else hotels
+
+
+def _filter_flights(flights: list[FlightOption], extraction: TripExtraction) -> list[FlightOption]:
+    prefs = extraction.flight_preferences
+    result = list(flights)
+
+    # remove avoided airlines
+    if prefs.avoid_airlines:
+        avoid = {a.lower() for a in prefs.avoid_airlines}
+        result = [f for f in result if f.airline.lower() not in avoid]
+
+    # filter by max stops
+    if prefs.max_stops is not None:
+        result = [f for f in result if f.stops <= prefs.max_stops]
+
+    # sort: preferred airlines first, then by price
+    preferred = {a.lower() for a in prefs.preferred_airlines}
+    result.sort(key=lambda f: (
+        0 if f.airline.lower() in preferred else 1,
+        f.price or float("inf"),
+        f.duration_min,
+    ))
+
+    return result
