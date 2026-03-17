@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.pipeline.assembly import assemble
 from app.pipeline.data_acquisition import acquire, compute_travel_matrix
@@ -6,6 +6,7 @@ from app.pipeline.scoring import score_and_filter
 from app.pipeline.scheduler import schedule
 from app.schemas import ExtractionRequest, ExtractionResponse, PlanResponse
 from app.services.bedrock import BedrockExtractionError, extract as bedrock_extract
+from app.services.images import get_place_image
 
 router = APIRouter(prefix="/api/trips", tags=["trips"])
 
@@ -52,3 +53,15 @@ async def plan(request: ExtractionRequest):
 
     # Stage 5: response assembly
     return assemble(ext, data, itinerary)
+
+
+@router.get("/places/image")
+async def place_image(
+    name: str = Query(..., description="Place name (e.g. 'Colosseum')"),
+    city: str | None = Query(None, description="City for context (e.g. 'Rome')"),
+):
+    """Fetch the best image for a place using SerpAPI + AI selection."""
+    result = await get_place_image(name, city)
+    if not result:
+        raise HTTPException(status_code=404, detail="No images found")
+    return result
