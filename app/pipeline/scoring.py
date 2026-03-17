@@ -136,6 +136,20 @@ def score_and_filter(
 
     # score
     scored = [(poi, _score_poi(poi, interests, budget_level, cuisine_prefs)) for poi in pois]
+
+    # dietary restriction boost — surface restaurants matching user's dietary needs
+    dietary = extraction.constraints.dietary_restrictions
+    if dietary:
+        dietary_lower = [d.lower() for d in dietary]
+        boosted = []
+        for poi, score in scored:
+            if poi.category == "restaurant":
+                haystack = ((poi.cuisine or "") + " " + poi.name).lower()
+                if any(d in haystack for d in dietary_lower):
+                    score += 10
+            boosted.append((poi, score))
+        scored = boosted
+
     scored.sort(key=lambda x: x[1], reverse=True)
 
     # cap: enough POIs for the scheduler to fill all days
