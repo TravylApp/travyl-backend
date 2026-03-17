@@ -59,8 +59,8 @@ class Settings(BaseSettings):
     mapbox_access_token: str = ""
 
     class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+        # AWS_SECRET_NAME in env (written by deploy) triggers Secrets Manager loading above.
+        # No .env file needed — all config comes from Secrets Manager or env vars.
         extra = "ignore"
 
 
