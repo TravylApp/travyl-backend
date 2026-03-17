@@ -838,6 +838,12 @@ async def _fetch_serp_flights(
         params["return_date"] = end
         params["type"] = "1"  # round trip
 
+    # map travel_class string to SerpAPI int
+    _CLASS_MAP = {"economy": 1, "business": 3, "first": 4}
+    tc = extraction.flight_preferences.travel_class
+    if tc and tc in _CLASS_MAP:
+        params["travel_class"] = str(_CLASS_MAP[tc])
+
     data = await _serpapi(session, params)
     if not data:
         return []

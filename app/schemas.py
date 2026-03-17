@@ -50,6 +50,13 @@ class Accommodation(BaseModel):
     booked: bool = False
 
 
+class FlightPreferences(BaseModel):
+    preferred_airlines: list[str] = []
+    avoid_airlines: list[str] = []
+    max_stops: int | None = None
+    travel_class: Literal["economy", "business", "first"] | None = None
+
+
 class Constraints(BaseModel):
     arrival_time: str | None = None
     departure_time: str | None = None
@@ -79,6 +86,7 @@ class TripExtraction(BaseModel):
     constraints: Constraints = Field(default_factory=Constraints)
     travel_mode_preference: Literal["walking", "public_transit", "rental_car", "rideshare", "cycling"] | None = None
     evening_preference: Literal["nightlife", "dining", "relaxing", "early_sleep"] | None = None
+    flight_preferences: FlightPreferences = Field(default_factory=FlightPreferences)
 
 
 class ExtractionResponse(BaseModel):
