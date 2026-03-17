@@ -173,6 +173,7 @@ class AcquisitionResult(BaseModel):
     flights: list[FlightOption] = []
     weather: list[DayWeather] = []
     destination_photo_url: str | None = None
+    timezone: str | None = None
 
 
 # --- Stage 4: Scheduler output models ---
@@ -205,6 +206,7 @@ class PlanResponse(BaseModel):
     hotels: list[HotelOption] = []
     flights: list[FlightOption] = []
     destination_photo_url: str | None = None
+    timezone: str | None = None
 
 
 # --- Menu extraction models ---
