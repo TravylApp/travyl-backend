@@ -202,3 +202,30 @@ class PlanResponse(BaseModel):
     hotels: list[HotelOption] = []
     flights: list[FlightOption] = []
     destination_photo_url: str | None = None
+
+
+# --- Place details ---
+
+class PlaceReview(BaseModel):
+    author: str
+    rating: float | None = None
+    text: str
+    date: str | None = None
+
+
+class PlaceDetails(BaseModel):
+    place_id: str | None = None
+    name: str
+    lat: float | None = None
+    lng: float | None = None
+    rating: float | None = None
+    review_count: int | None = None
+    reviews: list[PlaceReview] = []
+    photos: list[str] = []
+    opening_hours: dict[str, str] = {}
+    phone: str | None = None
+    website: str | None = None
+    address: str | None = None
+    price_level: int | None = None
+    category: str | None = None
+    description: str | None = None
