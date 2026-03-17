@@ -902,19 +902,25 @@ async def _fetch_weather(session: aiohttp.ClientSession, extraction: TripExtract
     except ValueError:
         return []
 
-    if days_ahead <= 15:
+    use_forecast = days_ahead <= 15
+
+    if use_forecast:
         url = _OPEN_METEO_FORECAST
         s, e = start, end
+        # forecast API param names
+        daily_params = "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weathercode,windspeed_10m_max"
     else:
+        # archive API: different param names, no precipitation_probability
         url = _OPEN_METEO_ARCHIVE
         s_dt = start_dt.replace(year=start_dt.year - 1)
         e_dt = datetime.strptime(end, "%Y-%m-%d").replace(year=start_dt.year - 1)
         s, e = s_dt.strftime("%Y-%m-%d"), e_dt.strftime("%Y-%m-%d")
+        daily_params = "temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code,wind_speed_10m_max"
 
     params = {
         "latitude": str(lat),
         "longitude": str(lng),
-        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weathercode,windspeed_10m_max",
+        "daily": daily_params,
         "start_date": s,
         "end_date": e,
         "timezone": "auto",
@@ -933,33 +939,48 @@ async def _fetch_weather(session: aiohttp.ClientSession, extraction: TripExtract
     highs = daily.get("temperature_2m_max", [])
     lows = daily.get("temperature_2m_min", [])
     precip = daily.get("precipitation_sum", [])
-    precip_prob = daily.get("precipitation_probability_max", [])
-    codes = daily.get("weathercode", [])
-    wind = daily.get("windspeed_10m_max", [])
+
+    if use_forecast:
+        precip_prob = daily.get("precipitation_probability_max", [])
+        codes = daily.get("weathercode", [])
+        wind = daily.get("windspeed_10m_max", [])
+    else:
+        precip_prob = []
+        codes = daily.get("weather_code", [])
+        wind = daily.get("wind_speed_10m_max", [])
 
     weather: list[DayWeather] = []
     for i, d in enumerate(dates):
-        # for historical data, map dates back to the actual trip year
         actual_date = d
-        if days_ahead > 15:
+        if not use_forecast:
+            # map historical dates back to the actual trip year
             try:
                 hist_dt = datetime.strptime(d, "%Y-%m-%d")
                 actual_date = hist_dt.replace(year=hist_dt.year + 1).strftime("%Y-%m-%d")
             except ValueError:
                 pass
 
+        # estimate precip probability from historical amount when unavailable
+        if i < len(precip_prob):
+            prob = precip_prob[i]
+        elif i < len(precip) and precip[i] is not None:
+            prob = min(precip[i] / 5.0 * 100, 100.0) if precip[i] > 0 else 0.0
+        else:
+            prob = 0.0
+
         weather.append(DayWeather(
             date=actual_date,
             temp_high_c=highs[i] if i < len(highs) else 20.0,
             temp_low_c=lows[i] if i < len(lows) else 10.0,
             precipitation_mm=precip[i] if i < len(precip) else 0.0,
-            precipitation_prob=precip_prob[i] if i < len(precip_prob) else 0.0,
+            precipitation_prob=prob,
             condition=_WMO_CONDITIONS.get(codes[i] if i < len(codes) else 0, "clear"),
             wind_speed_kmh=wind[i] if i < len(wind) else 0.0,
         ))
 
     await _cset(cache_key, weather, _TTL_WEATHER)
-    log.info("Weather: %d days for %s", len(weather), extraction.destination.city)
+    source_label = "forecast" if use_forecast else "historical"
+    log.info("Weather (%s): %d days for %s", source_label, len(weather), extraction.destination.city)
     return weather
 
 
