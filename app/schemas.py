@@ -181,6 +181,8 @@ class ScheduleSlot(BaseModel):
     poi: POI
     start_time: str  # "09:00"
     end_time: str  # "10:30"
+    start_time_12h: str = ""  # "9:00 AM"
+    end_time_12h: str = ""  # "10:30 AM"
     travel_from_prev_min: int = 0
 
 

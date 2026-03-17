@@ -51,6 +51,15 @@ def _minutes_to_hhmm(mins: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 
+def _to_12h(hhmm: str) -> str:
+    """Convert "09:00" -> "9:00 AM", "13:30" -> "1:30 PM", "00:00" -> "12:00 AM"."""
+    parts = hhmm.split(":")
+    h, m = int(parts[0]), int(parts[1])
+    suffix = "AM" if h < 12 else "PM"
+    h12 = h % 12 or 12
+    return f"{h12}:{m:02d} {suffix}"
+
+
 def _is_outdoor(poi: POI) -> bool:
     return poi.subcategory in _OUTDOOR_SUBCATEGORIES or poi.category == "nature"
 
@@ -702,10 +711,14 @@ def schedule(
                 prev_poi = scored_pois[routed[i - 1][0]][0]
                 travel = _travel(travel_matrix, prev_poi.id, poi.id)
 
+            start_hhmm = _minutes_to_hhmm(start_min)
+            end_hhmm = _minutes_to_hhmm(start_min + poi.visit_duration_min)
             slots.append(ScheduleSlot(
                 poi=poi,
-                start_time=_minutes_to_hhmm(start_min),
-                end_time=_minutes_to_hhmm(start_min + poi.visit_duration_min),
+                start_time=start_hhmm,
+                end_time=end_hhmm,
+                start_time_12h=_to_12h(start_hhmm),
+                end_time_12h=_to_12h(end_hhmm),
                 travel_from_prev_min=travel,
             ))
 
