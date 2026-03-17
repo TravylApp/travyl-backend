@@ -182,6 +182,7 @@ class ScheduleSlot(BaseModel):
     start_time: str  # "09:00"
     end_time: str  # "10:30"
     travel_from_prev_min: int = 0
+    directions_url: str | None = None
 
 
 class DayPlan(BaseModel):
