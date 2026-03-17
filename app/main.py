@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import events, hotels, places, trips
+from app.routers import events, flights, hotels, places, trips
 from app.services.bedrock import warm_caches
 
 
@@ -25,6 +25,7 @@ app.add_middleware(
 )
 
 app.include_router(events.router)
+app.include_router(flights.router)
 app.include_router(hotels.router)
 app.include_router(places.router)
 app.include_router(trips.router)
