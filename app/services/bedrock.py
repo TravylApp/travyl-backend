@@ -83,9 +83,11 @@ BUDGET: "backpacking" = budget, "5-star" = luxury. Null if unclear.
 
 PACE: "chill" = relaxed, "pack it in" = packed. Null if unclear.
 
-MEALS: "I love sushi" → cuisine_preferences=["japanese"]. Only from explicit mention.
+MEALS: "I love sushi" → cuisine_preferences=["japanese"]. "no breakfast"/"we'll eat on our own" → include_in_itinerary=false. Default include_in_itinerary=true. Only set cuisine_preferences from explicit mention.
 
 ACCOMMODATION: "hostel"/"resort"/"Airbnb" → set type. booked=true only if stated.
+
+FLIGHTS: "no Spirit" → flight_preferences.avoid_airlines=["Spirit"]. "prefer United" → flight_preferences.preferred_airlines=["United"]. "direct only" → flight_preferences.max_stops=0. "business class" → flight_preferences.travel_class="business". Only from explicit mention.
 
 CONSTRAINTS: All from explicit input only. \
 arrival_time/departure_time = HH:MM from flight mentions. \

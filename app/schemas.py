@@ -64,7 +64,6 @@ class Constraints(BaseModel):
     daily_end_time: str | None = None
     must_visit: list[str] = []
     must_avoid: list[str] = []
-    pre_booked: list[str] = []
     accessibility_needs: list[str] = []
     dietary_restrictions: list[str] = []
     mobility_level: Literal["full", "limited", "wheelchair"] | None = None
@@ -181,7 +180,6 @@ class AcquisitionResult(BaseModel):
     flights: list[FlightOption] = []
     weather: list[DayWeather] = []
     destination_photo_url: str | None = None
-    timezone: str | None = None
 
 
 # --- Stage 4: Scheduler output models ---
