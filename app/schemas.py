@@ -202,3 +202,20 @@ class PlanResponse(BaseModel):
     hotels: list[HotelOption] = []
     flights: list[FlightOption] = []
     destination_photo_url: str | None = None
+
+
+# --- Menu extraction models ---
+
+class MenuItem(BaseModel):
+    name: str
+    price: str | None = None
+    description: str | None = None
+    dietary_tags: list[str] = []  # "vegan", "gluten-free", "halal", etc.
+    category: str | None = None  # "appetizer", "main", "dessert", "drink"
+
+
+class MenuResponse(BaseModel):
+    restaurant_name: str
+    menu_url: str | None = None
+    items: list[MenuItem] = []
+    source: str = "ai_extracted"  # or "serpapi"

@@ -27,6 +27,7 @@ app.add_middleware(
 app.include_router(events.router)
 app.include_router(places.router)
 app.include_router(trips.router)
+app.include_router(places.router)
 
 
 @app.get("/health")
