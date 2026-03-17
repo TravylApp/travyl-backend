@@ -31,7 +31,12 @@ _BUDGET_PRICE_TARGET = {"budget": 1, "moderate": 2, "comfortable": 3, "luxury": 
 PACE_RANGES = {"relaxed": (2, 4), "moderate": (3, 5), "packed": (4, 7)}
 
 
-def _score_poi(poi: POI, interests: set[str], budget_level: str | None) -> float:
+def _score_poi(
+    poi: POI,
+    interests: set[str],
+    budget_level: str | None,
+    cuisine_preferences: list[str] | None = None,
+) -> float:
     score = 0.0
 
     # interest match (0-30) — subcategory matches user interests
@@ -42,6 +47,13 @@ def _score_poi(poi: POI, interests: set[str], budget_level: str | None) -> float
     # tag overlap with user interests
     tag_overlap = len(set(poi.tags) & interests)
     score += tag_overlap * 5
+
+    # cuisine preference boost (+15) — restaurant matches user's cuisine prefs
+    if cuisine_preferences and poi.category == "restaurant":
+        prefs_lower = [c.lower() for c in cuisine_preferences]
+        haystack = ((poi.cuisine or "") + " " + poi.name).lower()
+        if any(pref in haystack for pref in prefs_lower):
+            score += 15
 
     # rating (0-25)
     if poi.rating:
@@ -113,6 +125,7 @@ def score_and_filter(
     avoid_cats = set(extraction.constraints.avoid_categories)
     budget_level = extraction.budget_level
     pace = extraction.pace
+    cuisine_prefs = extraction.meals.cuisine_preferences or []
 
     # filter
     pois = [
@@ -122,7 +135,7 @@ def score_and_filter(
     pois = _filter_restaurants(pois, extraction.meals.avoid_cuisines)
 
     # score
-    scored = [(poi, _score_poi(poi, interests, budget_level)) for poi in pois]
+    scored = [(poi, _score_poi(poi, interests, budget_level, cuisine_prefs)) for poi in pois]
     scored.sort(key=lambda x: x[1], reverse=True)
 
     # cap: enough POIs for the scheduler to fill all days
