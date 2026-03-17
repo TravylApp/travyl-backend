@@ -551,33 +551,7 @@ async def _serpapi(session: aiohttp.ClientSession, params: dict) -> dict | None:
         return None
 
 
-async def _fetch_serp_maps(
-    session: aiohttp.ClientSession,
-    extraction: TripExtraction,
-    query_type: str,
-) -> list[POI]:
-    city = extraction.destination.city
-    country = extraction.destination.country
-    cache_key = f"serp_maps:{city}:{country}:{query_type}"
-    cached = await _cget(cache_key)
-    if cached:
-        return cached
-
-    if query_type == "restaurants":
-        q = f"best restaurants in {city} {country}"
-    else:
-        q = f"things to do in {city} {country}"
-
-    lat, lng = extraction.destination.lat, extraction.destination.lng
-    data = await _serpapi(session, {
-        "engine": "google_maps",
-        "q": q,
-        "ll": f"@{lat},{lng},14z",
-        "hl": "en",
-    })
-    if not data:
-        return []
-
+def _parse_serp_maps_results(data: dict, query_type: str, cuisine_tag: str | None = None) -> list[POI]:
     pois: list[POI] = []
     for item in data.get("local_results", []):
         title = item.get("title")
@@ -612,15 +586,96 @@ async def _fetch_serp_maps(
             photo_url=item.get("thumbnail"),
             website=item.get("website"),
             visit_duration_min=_VISIT_DURATION.get(subcat, 60),
-            cuisine=None,
+            cuisine=cuisine_tag,
             tags=_SUBCATEGORY_INTEREST_TAGS.get(subcat, []),
             source="serpapi",
         )
         pois.append(poi)
+    return pois
+
+
+async def _fetch_serp_maps(
+    session: aiohttp.ClientSession,
+    extraction: TripExtraction,
+    query_type: str,
+) -> list[POI]:
+    city = extraction.destination.city
+    country = extraction.destination.country
+    cache_key = f"serp_maps:{city}:{country}:{query_type}"
+    cached = await _cget(cache_key)
+    if cached:
+        return cached
+
+    if query_type == "restaurants":
+        q = f"best restaurants in {city} {country}"
+    else:
+        q = f"things to do in {city} {country}"
+
+    lat, lng = extraction.destination.lat, extraction.destination.lng
+    data = await _serpapi(session, {
+        "engine": "google_maps",
+        "q": q,
+        "ll": f"@{lat},{lng},14z",
+        "hl": "en",
+    })
+    if not data:
+        return []
+
+    pois = _parse_serp_maps_results(data, query_type)
 
     await _cset(cache_key, pois, _TTL_SERP)
     log.info("SerpAPI maps (%s): %d results for %s", query_type, len(pois), city)
     return pois
+
+
+async def _fetch_dietary_restaurants(
+    session: aiohttp.ClientSession,
+    extraction: TripExtraction,
+) -> list[POI]:
+    """Extra SerpAPI queries for each dietary restriction (vegan, halal, etc.)."""
+    restrictions = extraction.constraints.dietary_restrictions
+    if not restrictions:
+        return []
+
+    city = extraction.destination.city
+    country = extraction.destination.country
+    lat, lng = extraction.destination.lat, extraction.destination.lng
+
+    async def _query_one(restriction: str) -> list[POI]:
+        cache_key = f"serp_maps:{city}:{country}:dietary:{restriction.lower()}"
+        cached = await _cget(cache_key)
+        if cached:
+            return cached
+
+        q = f"{restriction} restaurants in {city} {country}"
+        data = await _serpapi(session, {
+            "engine": "google_maps",
+            "q": q,
+            "ll": f"@{lat},{lng},14z",
+            "hl": "en",
+        })
+        if not data:
+            return []
+
+        pois = _parse_serp_maps_results(data, "restaurants", cuisine_tag=restriction.lower())
+        await _cset(cache_key, pois, _TTL_SERP)
+        log.info("SerpAPI dietary (%s): %d results for %s", restriction, len(pois), city)
+        return pois
+
+    results = await asyncio.gather(*[_query_one(r) for r in restrictions], return_exceptions=True)
+
+    all_pois: list[POI] = []
+    seen: set[str] = set()
+    for result in results:
+        if isinstance(result, Exception):
+            log.warning("Dietary restaurant query failed: %s", result)
+            continue
+        for poi in result:
+            if poi.id not in seen:
+                seen.add(poi.id)
+                all_pois.append(poi)
+
+    return all_pois
 
 
 async def _fetch_serp_events(session: aiohttp.ClientSession, extraction: TripExtraction) -> list[Event]:
@@ -1100,6 +1155,7 @@ async def acquire(
             _fetch_overpass(session, extraction),
             _fetch_serp_maps(session, extraction, "attractions"),
             _fetch_serp_maps(session, extraction, "restaurants"),
+            _fetch_dietary_restaurants(session, extraction),
             _fetch_serp_events(session, extraction),
             _fetch_serp_hotels(session, extraction) if not is_local else _noop([]),
             _fetch_serp_flights(session, extraction, origin_city, origin_country) if not is_local else _noop([]),
@@ -1114,7 +1170,7 @@ async def acquire(
                 return default
             return val
 
-        (raw_overpass, raw_attractions, raw_restaurants,
+        (raw_overpass, raw_attractions, raw_restaurants, raw_dietary,
          raw_events, raw_hotels, raw_flights, raw_weather, raw_photo) = results
 
         overpass_result = _safe(raw_overpass, ([], {}))
@@ -1123,6 +1179,7 @@ async def acquire(
         overpass_pois, raw_tags = overpass_result
         serp_attractions = _safe(raw_attractions, [])
         serp_restaurants = _safe(raw_restaurants, [])
+        dietary_restaurants = _safe(raw_dietary, [])
         events = _safe(raw_events, [])
         hotels = _safe(raw_hotels, [])
         flights = _safe(raw_flights, [])
@@ -1135,13 +1192,18 @@ async def acquire(
             except Exception as e:
                 log.warning("Wikidata enrichment failed: %s", e)
 
-        serp_pois = serp_attractions + serp_restaurants
+        # deduplicate dietary results against generic restaurants by id
+        seen_ids = {p.id for p in serp_restaurants}
+        unique_dietary = [p for p in dietary_restaurants if p.id not in seen_ids]
+
+        serp_pois = serp_attractions + serp_restaurants + unique_dietary
         pois = _merge_pois(serp_pois, overpass_pois)
 
         log.info(
-            "Stage 2 complete%s: %d POIs (%d serp + %d osm), %d events, %d hotels, %d flights, %d weather days",
+            "Stage 2 complete%s: %d POIs (%d serp + %d dietary + %d osm), %d events, %d hotels, %d flights, %d weather days",
             " (local)" if is_local else "",
-            len(pois), len(serp_pois), len(overpass_pois), len(events), len(hotels), len(flights), len(weather),
+            len(pois), len(serp_attractions) + len(serp_restaurants), len(unique_dietary),
+            len(overpass_pois), len(events), len(hotels), len(flights), len(weather),
         )
 
         return AcquisitionResult(

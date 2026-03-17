@@ -121,8 +121,21 @@ def score_and_filter(
     ]
     pois = _filter_restaurants(pois, extraction.meals.avoid_cuisines)
 
+    # dietary restriction boost — soft signal, not a hard filter
+    dietary = {r.lower() for r in extraction.constraints.dietary_restrictions}
+
     # score
     scored = [(poi, _score_poi(poi, interests, budget_level)) for poi in pois]
+
+    if dietary:
+        boosted: list[tuple[POI, float]] = []
+        for poi, score in scored:
+            if poi.category == "restaurant":
+                searchable = f"{(poi.cuisine or '')} {poi.name}".lower()
+                if any(kw in searchable for kw in dietary):
+                    score += 10
+            boosted.append((poi, score))
+        scored = boosted
     scored.sort(key=lambda x: x[1], reverse=True)
 
     # cap: enough POIs for the scheduler to fill all days
