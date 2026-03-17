@@ -44,7 +44,9 @@ jobs:
             fi
 
             cd $DEPLOY_DIR
-            git pull origin $BRANCH
+            git fetch origin $BRANCH
+            git checkout $BRANCH
+            git reset --hard origin/$BRANCH
             source venv/bin/activate
             pip install -r requirements.txt
 
