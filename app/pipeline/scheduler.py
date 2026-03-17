@@ -24,6 +24,14 @@ LUNCH_WINDOW = (690, 810)     # 11:30-13:30
 DINNER_WINDOW = (1080, 1200)  # 18:00-20:00
 NIGHTLIFE_AFTER = 1200        # 20:00
 
+_TRAVEL_MODE_MAP = {
+    "walking": "walking",
+    "public_transit": "transit",
+    "rental_car": "driving",
+    "rideshare": "driving",
+    "cycling": "bicycling",
+}
+
 _OUTDOOR_SUBCATEGORIES = {
     "park", "garden", "nature_reserve", "beach", "viewpoint",
     "marketplace", "playground", "zoo", "theme_park",
@@ -694,19 +702,28 @@ def schedule(
         )
 
         # build schedule slots
+        travelmode = _TRAVEL_MODE_MAP.get(extraction.travel_mode_preference, "walking")
         slots: list[ScheduleSlot] = []
         for i, (p_idx, start_min) in enumerate(routed):
             poi = scored_pois[p_idx][0]
             travel = 0
+            dir_url = None
             if i > 0:
                 prev_poi = scored_pois[routed[i - 1][0]][0]
                 travel = _travel(travel_matrix, prev_poi.id, poi.id)
+                dir_url = (
+                    f"https://www.google.com/maps/dir/?api=1"
+                    f"&origin={prev_poi.lat},{prev_poi.lng}"
+                    f"&destination={poi.lat},{poi.lng}"
+                    f"&travelmode={travelmode}"
+                )
 
             slots.append(ScheduleSlot(
                 poi=poi,
                 start_time=_minutes_to_hhmm(start_min),
                 end_time=_minutes_to_hhmm(start_min + poi.visit_duration_min),
                 travel_from_prev_min=travel,
+                directions_url=dir_url,
             ))
 
         plans.append(DayPlan(
