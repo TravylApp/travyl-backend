@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import trips
+from app.routers import places, trips
 from app.services.bedrock import warm_caches
 
 
@@ -24,6 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(places.router)
 app.include_router(trips.router)
 
 
