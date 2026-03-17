@@ -2,6 +2,8 @@
 
 import logging
 
+from timezonefinder import TimezoneFinder
+
 from app.schemas import (
     AcquisitionResult,
     DayPlan,
@@ -10,6 +12,8 @@ from app.schemas import (
 )
 
 log = logging.getLogger(__name__)
+
+_tf = TimezoneFinder()
 
 
 def assemble(
@@ -30,6 +34,11 @@ def assemble(
         key=lambda f: (f.price or float("inf"), f.duration_min),
     )[:5]
 
+    # resolve destination timezone
+    tz = None
+    if extraction.destination.lat and extraction.destination.lng:
+        tz = _tf.timezone_at(lat=extraction.destination.lat, lng=extraction.destination.lng)
+
     log.info(
         "Stage 5: assembled %d-day itinerary, %d hotels, %d flights",
         len(itinerary), len(hotels), len(flights),
@@ -42,6 +51,7 @@ def assemble(
         hotels=hotels,
         flights=flights,
         destination_photo_url=acquisition.destination_photo_url,
+        timezone=tz,
         data=acquisition,
     )
 
