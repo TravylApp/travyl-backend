@@ -65,6 +65,11 @@ class Constraints(BaseModel):
     crowd_tolerance: Literal["low", "moderate", "high"] | None = None
 
 
+class HotelPreferences(BaseModel):
+    min_stars: int | None = None
+    required_amenities: list[str] = []
+
+
 class TripExtraction(BaseModel):
     destination: Destination
     dates: TripDates
@@ -79,6 +84,7 @@ class TripExtraction(BaseModel):
     constraints: Constraints = Field(default_factory=Constraints)
     travel_mode_preference: Literal["walking", "public_transit", "rental_car", "rideshare", "cycling"] | None = None
     evening_preference: Literal["nightlife", "dining", "relaxing", "early_sleep"] | None = None
+    hotel_preferences: HotelPreferences = Field(default_factory=HotelPreferences)
 
 
 class ExtractionResponse(BaseModel):
