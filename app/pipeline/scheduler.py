@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from ortools.sat.python import cp_model
 
-from app.schemas import DayPlan, DayWeather, POI, ScheduleSlot, TripExtraction
+from app.schemas import DayPlan, DayWeather, Meals, POI, ScheduleSlot, TripExtraction
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ _ROUTING_RESERVE_S = 0.5
 PACE_UTILIZATION = {"relaxed": 0.55, "moderate": 0.75, "packed": 0.90}
 PACE_BUFFER = {"relaxed": 20, "moderate": 10, "packed": 5}
 
+BREAKFAST_WINDOW = (450, 570)  # 7:30-9:30
 LUNCH_WINDOW = (690, 810)     # 11:30-13:30
 DINNER_WINDOW = (1080, 1200)  # 18:00-20:00
 NIGHTLIFE_AFTER = 1200        # 20:00
@@ -220,6 +221,7 @@ def _greedy_time_assign(
     dates: list[str],
     must_visit_indices: list[int],
     evening_pref: str | None,
+    meals: Meals | None = None,
 ) -> list[list[int]]:
     """Assign POI indices to days using real travel times. POI count is an output of time math."""
     utilization = PACE_UTILIZATION.get(pace, 0.75)
@@ -293,18 +295,31 @@ def _greedy_time_assign(
         options.sort(key=lambda x: x[1])
         return options[0][0]
 
-    # step 1: reserve meal slots — 2 restaurants per day
+    # step 1: reserve meal slots — dynamic count per day based on time bounds
+    skip_meals = meals is not None and meals.include_in_itinerary is False
     restaurant_indices = [
         i for i in range(len(scored_pois))
         if scored_pois[i][0].category == "restaurant"
     ]
+
+    # compute how many meal windows each day can accommodate
+    meal_target = [0] * num_days
+    if not skip_meals:
+        for d in range(num_days):
+            ds, de = day_bounds[d]
+            if ds < BREAKFAST_WINDOW[1] and de > BREAKFAST_WINDOW[0]:
+                meal_target[d] += 1
+            if ds < LUNCH_WINDOW[1] and de > LUNCH_WINDOW[0]:
+                meal_target[d] += 1
+            if ds < DINNER_WINDOW[1] and de > DINNER_WINDOW[0]:
+                meal_target[d] += 1
+
     meals_per_day = [0] * num_days
     for r_idx in restaurant_indices:
         if r_idx in assigned_set:
             continue
-        # find day that needs a restaurant and where it fits
         for d in sorted(range(num_days), key=lambda d: meals_per_day[d]):
-            if meals_per_day[d] >= 2:
+            if meals_per_day[d] >= meal_target[d]:
                 break
             cost = _day_cost(r_idx, d)
             if cost is not None:
@@ -371,11 +386,13 @@ def _route_day(
 
     # identify restaurants for meal windows
     restaurants = [(local_i, poi_indices[local_i]) for local_i in range(n) if pois[local_i].category == "restaurant"]
+    breakfast_candidates = []
     lunch_candidates = []
     dinner_candidates = []
     for local_i, global_i in restaurants:
-        # assign first restaurant to lunch, second to dinner
-        if not lunch_candidates:
+        if not breakfast_candidates and day_start < BREAKFAST_WINDOW[1]:
+            breakfast_candidates.append(local_i)
+        elif not lunch_candidates:
             lunch_candidates.append(local_i)
         elif not dinner_candidates:
             dinner_candidates.append(local_i)
@@ -417,6 +434,10 @@ def _route_day(
         model.add(start[i] + pois[i].visit_duration_min <= day_end)
 
     # meal-window constraints
+    for local_i in breakfast_candidates:
+        model.add(start[local_i] >= BREAKFAST_WINDOW[0])
+        model.add(start[local_i] <= BREAKFAST_WINDOW[1])
+
     for local_i in lunch_candidates:
         model.add(start[local_i] >= LUNCH_WINDOW[0])
         model.add(start[local_i] <= LUNCH_WINDOW[1])
@@ -573,11 +594,11 @@ def _refine_cpsat(
             <= daily_min
         )
 
-    # max 2 restaurants per day
+    # max 3 restaurants per day (breakfast + lunch + dinner)
     rest_indices = [p for p in range(n) if scored_pois[p][0].category == "restaurant"]
     if rest_indices:
         for d in range(num_days):
-            model.add(sum(x[p, d] for p in rest_indices) <= 2)
+            model.add(sum(x[p, d] for p in rest_indices) <= 3)
 
     # must-visit forced
     for p in must_visit_indices:
@@ -686,6 +707,7 @@ def schedule(
         scored_pois, num_days, pace, day_bounds,
         travel_matrix, weather, dates,
         must_visit, extraction.evening_preference,
+        meals=extraction.meals,
     )
 
     # phase 3 (before routing): optional refinement
