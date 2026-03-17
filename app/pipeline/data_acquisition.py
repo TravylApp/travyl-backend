@@ -648,6 +648,49 @@ async def _fetch_serp_maps(
     return pois
 
 
+async def _fetch_dietary_restaurants(
+    session: aiohttp.ClientSession,
+    extraction: TripExtraction,
+) -> list[POI]:
+    restrictions = extraction.constraints.dietary_restrictions
+    if not restrictions:
+        return []
+
+    city = extraction.destination.city
+    country = extraction.destination.country
+    lat, lng = extraction.destination.lat, extraction.destination.lng
+
+    cache_key = f"serp_dietary:{city}:{country}:{','.join(sorted(r.lower() for r in restrictions))}"
+    cached = await _cget(cache_key)
+    if cached:
+        return cached
+
+    coros = [
+        _serpapi(session, {
+            "engine": "google_maps",
+            "q": f"{restriction} restaurants in {city} {country}",
+            "ll": f"@{lat},{lng},14z",
+            "hl": "en",
+        })
+        for restriction in restrictions[:5]
+    ]
+    results = await asyncio.gather(*coros, return_exceptions=True)
+
+    pois: list[POI] = []
+    seen_ids: set[str] = set()
+    for result in results:
+        if isinstance(result, (Exception, type(None))):
+            continue
+        for poi in _parse_serp_maps_results(result, "restaurants"):
+            if poi.id not in seen_ids:
+                seen_ids.add(poi.id)
+                pois.append(poi)
+
+    await _cset(cache_key, pois, _TTL_SERP)
+    log.info("SerpAPI dietary restaurants: %d results for %s", len(pois), city)
+    return pois
+
+
 async def _fetch_serp_events(session: aiohttp.ClientSession, extraction: TripExtraction) -> list[Event]:
     city = extraction.destination.city
     country = extraction.destination.country
@@ -1152,6 +1195,7 @@ async def acquire(
             _fetch_overpass(session, extraction),
             _fetch_serp_maps(session, extraction, "attractions"),
             _fetch_serp_maps(session, extraction, "restaurants"),
+            _fetch_dietary_restaurants(session, extraction),
             _fetch_serp_events(session, extraction),
             _fetch_serp_hotels(session, extraction) if not is_local else _noop([]),
             _fetch_serp_flights(session, extraction, origin_city, origin_country) if not is_local else _noop([]),
@@ -1166,7 +1210,7 @@ async def acquire(
                 return default
             return val
 
-        (raw_overpass, raw_attractions, raw_restaurants,
+        (raw_overpass, raw_attractions, raw_restaurants, raw_dietary,
          raw_events, raw_hotels, raw_flights, raw_weather, raw_photo) = results
 
         overpass_result = _safe(raw_overpass, ([], {}))
@@ -1175,11 +1219,20 @@ async def acquire(
         overpass_pois, raw_tags = overpass_result
         serp_attractions = _safe(raw_attractions, [])
         serp_restaurants = _safe(raw_restaurants, [])
+        dietary_restaurants = _safe(raw_dietary, [])
         events = _safe(raw_events, [])
         hotels = _safe(raw_hotels, [])
         flights = _safe(raw_flights, [])
         weather = _safe(raw_weather, [])
         hero_url = _safe(raw_photo, None)
+
+        # deduplicate dietary results against generic restaurants
+        if dietary_restaurants:
+            existing_ids = {p.id for p in serp_restaurants}
+            for poi in dietary_restaurants:
+                if poi.id not in existing_ids:
+                    existing_ids.add(poi.id)
+                    serp_restaurants.append(poi)
 
         if overpass_pois:
             try:
