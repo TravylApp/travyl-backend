@@ -169,8 +169,9 @@ def _poi_open_on_day(poi: POI, date_str: str) -> tuple[int, int] | None:
         if open_min is None or close_min is None:
             return None
 
+        # handle midnight wrap (e.g. bar open 20:00-02:00)
         if close_min <= open_min:
-            close_min = 1440
+            close_min += 1440
 
         earliest_open = min(earliest_open, open_min)
         latest_close = max(latest_close, close_min)

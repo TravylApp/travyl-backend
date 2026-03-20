@@ -42,13 +42,14 @@ _UNSPLASH_URL = "https://api.unsplash.com/search/photos"
 
 
 _redis: aioredis.Redis | None = None
-_redis_failed = False
+_redis_retry_after: float = 0
 _KEY_PREFIX = "travyl:"
 
 
 def _get_redis() -> aioredis.Redis | None:
-    global _redis, _redis_failed
-    if _redis_failed:
+    global _redis, _redis_retry_after
+    import time as _t
+    if _redis_retry_after and _t.monotonic() < _redis_retry_after:
         return None
     if _redis is None:
         try:
@@ -56,8 +57,8 @@ def _get_redis() -> aioredis.Redis | None:
                 settings.redis_url, decode_responses=False, socket_timeout=2,
             )
         except Exception:
-            log.warning("Redis connection failed, caching disabled")
-            _redis_failed = True
+            log.warning("Redis connection failed, retrying in 60s")
+            _redis_retry_after = _t.monotonic() + 60
             return None
     return _redis
 
@@ -70,6 +71,7 @@ async def _cget(key: str) -> object | None:
         data = await r.get(f"{_KEY_PREFIX}{key}")
         return pickle.loads(data) if data else None
     except Exception:
+        _reset_redis()
         return None
 
 
@@ -80,7 +82,15 @@ async def _cset(key: str, val: object, ttl: int) -> None:
     try:
         await r.setex(f"{_KEY_PREFIX}{key}", ttl, pickle.dumps(val))
     except Exception:
-        pass
+        _reset_redis()
+
+
+def _reset_redis():
+    global _redis, _redis_retry_after
+    import time as _t
+    _redis = None
+    _redis_retry_after = _t.monotonic() + 60
+    log.warning("Redis error, will retry in 60s")
 
 
 _TTL_OVERPASS = 86_400
@@ -777,9 +787,12 @@ async def _fetch_serp_hotels(session: aiohttp.ClientSession, extraction: TripExt
     if cached:
         return cached
 
+    accom_type = extraction.accommodation.type
+    q = f"{accom_type} in {city} {country}" if accom_type else f"{city} {country}"
+
     data = await _serpapi(session, {
         "engine": "google_hotels",
-        "q": f"{city} {country}",
+        "q": q,
         "check_in_date": start,
         "check_out_date": end,
         "adults": str(adults),
