@@ -114,9 +114,6 @@ def assemble(
         len(itinerary), len(hotels), len(flights),
     )
 
-    # strip raw hotels/flights from data to avoid duplicating the filtered versions
-    acq_data = acquisition.model_copy(update={"hotels": [], "flights": []})
-
     return PlanResponse(
         status="complete",
         extracted=extraction,
@@ -125,7 +122,7 @@ def assemble(
         flights=flights,
         destination_photo_url=acquisition.destination_photo_url,
         timezone=tz,
-        data=acq_data,
+        data=acquisition,
     )
 
 

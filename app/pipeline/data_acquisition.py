@@ -275,11 +275,9 @@ _OVERPASS_BATCHES = [
         '["historic"="monument"]', '["historic"="memorial"]', '["historic"="castle"]',
         '["historic"="ruins"]', '["historic"="archaeological_site"]',
     ],
-    [  # food + nightlife
+    [  # food + nightlife + nature + culture + shopping
         '["amenity"="restaurant"]', '["amenity"="cafe"]',
         '["amenity"="bar"]', '["amenity"="pub"]', '["amenity"="nightclub"]',
-    ],
-    [  # nature + culture + shopping
         '["leisure"="park"]', '["leisure"="garden"]', '["natural"="beach"]',
         '["amenity"="place_of_worship"]', '["amenity"="theatre"]',
         '["amenity"="marketplace"]', '["shop"="mall"]',
@@ -366,18 +364,14 @@ async def _fetch_overpass(session: aiohttp.ClientSession, extraction: TripExtrac
     if cached:
         return cached
 
-    # Overpass fair-use: max 2 concurrent requests, then a third after a delay
     queries = [_build_overpass_query(lat, lng, tags) for tags in _OVERPASS_BATCHES]
-    batch_1_2 = await asyncio.gather(
-        _run_overpass_batch(session, queries[0]),
-        _run_overpass_batch(session, queries[1]),
+    batch_results = await asyncio.gather(
+        *[_run_overpass_batch(session, q) for q in queries],
         return_exceptions=True,
     )
-    await asyncio.sleep(1)
-    batch_3 = await _run_overpass_batch(session, queries[2])
 
     all_elements: list[dict] = []
-    for result in [*batch_1_2, batch_3]:
+    for result in batch_results:
         if isinstance(result, Exception):
             log.warning("Overpass batch error: %s", result)
             continue
@@ -527,7 +521,7 @@ async def _enrich_pois_wikidata(
 
     # fetch Wikipedia summaries for the top 20 most notable POIs
     if wiki_titles:
-        ranked = sorted(wiki_titles.keys(), key=lambda i: _completeness(pois[i]), reverse=True)[:20]
+        ranked = sorted(wiki_titles.keys(), key=lambda i: _completeness(pois[i]), reverse=True)[:10]
         tasks = [_wikipedia_summary(session, wiki_titles[i]) for i in ranked]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -994,8 +988,8 @@ async def _fetch_weather(session: aiohttp.ClientSession, extraction: TripExtract
     if use_forecast:
         url = _OPEN_METEO_FORECAST
         s, e = start, end
-        # forecast API param names
-        daily_params = "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weathercode,windspeed_10m_max"
+        # forecast API param names (weather_code / wind_speed_10m_max since Open-Meteo v1)
+        daily_params = "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weather_code,wind_speed_10m_max"
     else:
         # archive API: different param names, no precipitation_probability
         url = _OPEN_METEO_ARCHIVE
@@ -1029,8 +1023,8 @@ async def _fetch_weather(session: aiohttp.ClientSession, extraction: TripExtract
 
     if use_forecast:
         precip_prob = daily.get("precipitation_probability_max", [])
-        codes = daily.get("weathercode", [])
-        wind = daily.get("windspeed_10m_max", [])
+        codes = daily.get("weather_code", [])
+        wind = daily.get("wind_speed_10m_max", [])
     else:
         precip_prob = []
         codes = daily.get("weather_code", [])
@@ -1202,10 +1196,23 @@ async def acquire(
     )
 
     async with aiohttp.ClientSession(headers=_HEADERS, timeout=_TIMEOUT) as session:
-        # always fetch: POIs, events, weather, hero photo
-        # conditionally fetch: hotels (not local, not pre-booked), flights (not local, international)
+
+        async def _overpass_with_enrichment() -> list[POI]:
+            """Fetch Overpass POIs and enrich with Wikidata/Wikipedia in one task."""
+            result = await _fetch_overpass(session, extraction)
+            if not isinstance(result, tuple):
+                return []
+            overpass_pois, raw_tags = result
+            if overpass_pois:
+                try:
+                    await _enrich_pois_wikidata(session, overpass_pois, raw_tags)
+                except Exception as e:
+                    log.warning("Wikidata enrichment failed: %s", e)
+            return overpass_pois
+
+        # all tasks run in parallel — enrichment overlaps with SerpAPI/weather/flights
         coros = [
-            _fetch_overpass(session, extraction),
+            _overpass_with_enrichment(),
             _fetch_serp_maps(session, extraction, "attractions"),
             _fetch_serp_maps(session, extraction, "restaurants"),
             _fetch_dietary_restaurants(session, extraction),
@@ -1226,10 +1233,7 @@ async def acquire(
         (raw_overpass, raw_attractions, raw_restaurants, raw_dietary,
          raw_events, raw_hotels, raw_flights, raw_weather, raw_photo) = results
 
-        overpass_result = _safe(raw_overpass, ([], {}))
-        if not isinstance(overpass_result, tuple):
-            overpass_result = ([], {})
-        overpass_pois, raw_tags = overpass_result
+        overpass_pois = _safe(raw_overpass, [])
         serp_attractions = _safe(raw_attractions, [])
         serp_restaurants = _safe(raw_restaurants, [])
         dietary_restaurants = _safe(raw_dietary, [])
@@ -1246,12 +1250,6 @@ async def acquire(
                 if poi.id not in existing_ids:
                     existing_ids.add(poi.id)
                     serp_restaurants.append(poi)
-
-        if overpass_pois:
-            try:
-                await _enrich_pois_wikidata(session, overpass_pois, raw_tags)
-            except Exception as e:
-                log.warning("Wikidata enrichment failed: %s", e)
 
         serp_pois = serp_attractions + serp_restaurants
         pois = _merge_pois(serp_pois, overpass_pois)
