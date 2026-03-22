@@ -4,7 +4,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import events, flights, hotels, places, trips
+from app.routers import (
+    activities,
+    collaborators,
+    crud_trips,
+    events,
+    favorites,
+    flights,
+    hotels,
+    places,
+    profiles,
+    trip_notes,
+    trips,
+)
 from app.services.bedrock import warm_caches
 
 
@@ -29,6 +41,15 @@ app.include_router(flights.router)
 app.include_router(hotels.router)
 app.include_router(places.router)
 app.include_router(trips.router)
+
+# CRUD routers
+app.include_router(crud_trips.router)
+app.include_router(activities.router)
+app.include_router(trip_notes.router)
+app.include_router(collaborators.router)
+app.include_router(collaborators.accept_router)
+app.include_router(profiles.router)
+app.include_router(favorites.router)
 
 
 @app.get("/health")
