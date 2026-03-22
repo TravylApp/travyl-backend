@@ -1,26 +1,20 @@
 """CRUD endpoints for favorite places (TRA-224)."""
 
-from typing import Literal
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.access import validate_uuid
 from app.auth import get_current_user
+from app.schemas import ACTIVITY_TYPE
 from app.services.supabase import get_supabase
 
 router = APIRouter(prefix="/api/favorites", tags=["favorites"])
 
-ACTIVITY_TYPE = Literal["hotel", "airport", "food", "nature", "amusement park", "other"]
-
-
-# ---------- Schemas ----------
 
 class FavoriteCreate(BaseModel):
     activity_type: ACTIVITY_TYPE = "other"
     activity_data: dict = Field(default_factory=dict)
 
-
-# ---------- Endpoints ----------
 
 @router.get("")
 def list_favorites(user: dict = Depends(get_current_user)):
@@ -46,6 +40,7 @@ def add_favorite(body: FavoriteCreate, user: dict = Depends(get_current_user)):
 
 @router.delete("/{favorite_id}", status_code=204)
 def remove_favorite(favorite_id: str, user: dict = Depends(get_current_user)):
+    validate_uuid(favorite_id, "Favorite")
     sb = get_supabase()
     res = (
         sb.table("favorite_places")
