@@ -1,7 +1,5 @@
 """CRUD endpoints for user profiles (TRA-223)."""
 
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -9,7 +7,6 @@ from app.auth import get_current_user
 from app.services.supabase import get_supabase
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
-log = logging.getLogger(__name__)
 
 
 # ---------- Schemas ----------
@@ -24,7 +21,7 @@ class ProfileUpdate(BaseModel):
 # ---------- Endpoints ----------
 
 @router.get("/me")
-async def get_my_profile(user: dict = Depends(get_current_user)):
+def get_my_profile(user: dict = Depends(get_current_user)):
     sb = get_supabase()
     res = sb.table("profiles").select("*").eq("id", user["id"]).maybe_single().execute()
     if not res.data:
@@ -33,7 +30,7 @@ async def get_my_profile(user: dict = Depends(get_current_user)):
 
 
 @router.patch("/me")
-async def update_my_profile(body: ProfileUpdate, user: dict = Depends(get_current_user)):
+def update_my_profile(body: ProfileUpdate, user: dict = Depends(get_current_user)):
     sb = get_supabase()
     updates = body.model_dump(exclude_none=True)
     if not updates:
@@ -45,7 +42,7 @@ async def update_my_profile(body: ProfileUpdate, user: dict = Depends(get_curren
 
 
 @router.get("/{username}")
-async def get_public_profile(username: str):
+def get_public_profile(username: str):
     sb = get_supabase()
     res = (
         sb.table("profiles")

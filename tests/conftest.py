@@ -1,7 +1,7 @@
 """Shared fixtures for CRUD API tests."""
 
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,8 +40,7 @@ class FakeQuery:
         elif isinstance(self._data, list) and self._data:
             for row in self._data:
                 row.update(vals)
-        else:
-            self._data = [vals]
+        # empty list / None → stays empty (no rows matched)
         return self
     def upsert(self, rows, **kw):
         for r in rows:
@@ -53,6 +52,7 @@ class FakeQuery:
     def or_(self, *a, **kw): return self
     def ilike(self, *a, **kw): return self
     def order(self, *a, **kw): return self
+    def range(self, *a, **kw): return self
     def single(self, **kw):
         self._is_single = True
         return self
@@ -100,7 +100,8 @@ def client(fake_sb):
 
     app.dependency_overrides[get_current_user] = lambda: FAKE_USER
 
-    with patch("app.routers.crud_trips.get_supabase", return_value=fake_sb), \
+    with patch("app.access.get_supabase", return_value=fake_sb), \
+         patch("app.routers.crud_trips.get_supabase", return_value=fake_sb), \
          patch("app.routers.activities.get_supabase", return_value=fake_sb), \
          patch("app.routers.trip_notes.get_supabase", return_value=fake_sb), \
          patch("app.routers.collaborators.get_supabase", return_value=fake_sb), \

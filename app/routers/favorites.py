@@ -1,28 +1,29 @@
 """CRUD endpoints for favorite places (TRA-224)."""
 
-import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth import get_current_user
 from app.services.supabase import get_supabase
 
 router = APIRouter(prefix="/api/favorites", tags=["favorites"])
-log = logging.getLogger(__name__)
+
+ACTIVITY_TYPE = Literal["hotel", "airport", "food", "nature", "amusement park", "other"]
 
 
 # ---------- Schemas ----------
 
 class FavoriteCreate(BaseModel):
-    activity_type: str = "other"
-    activity_data: dict = {}
+    activity_type: ACTIVITY_TYPE = "other"
+    activity_data: dict = Field(default_factory=dict)
 
 
 # ---------- Endpoints ----------
 
 @router.get("")
-async def list_favorites(user: dict = Depends(get_current_user)):
+def list_favorites(user: dict = Depends(get_current_user)):
     sb = get_supabase()
     res = (
         sb.table("favorite_places")
@@ -35,7 +36,7 @@ async def list_favorites(user: dict = Depends(get_current_user)):
 
 
 @router.post("", status_code=201)
-async def add_favorite(body: FavoriteCreate, user: dict = Depends(get_current_user)):
+def add_favorite(body: FavoriteCreate, user: dict = Depends(get_current_user)):
     sb = get_supabase()
     row = body.model_dump()
     row["user_id"] = user["id"]
@@ -44,7 +45,7 @@ async def add_favorite(body: FavoriteCreate, user: dict = Depends(get_current_us
 
 
 @router.delete("/{favorite_id}", status_code=204)
-async def remove_favorite(favorite_id: str, user: dict = Depends(get_current_user)):
+def remove_favorite(favorite_id: str, user: dict = Depends(get_current_user)):
     sb = get_supabase()
     res = (
         sb.table("favorite_places")

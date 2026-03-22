@@ -1,15 +1,17 @@
 """CRUD endpoints for activities (TRA-220)."""
 
-import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.access import assert_trip_access
 from app.auth import get_current_user
 from app.services.supabase import get_supabase
 
 router = APIRouter(prefix="/api/trips/{trip_id}/activities", tags=["activities"])
-log = logging.getLogger(__name__)
+
+ACTIVITY_TYPE = Literal["hotel", "airport", "food", "nature", "amusement park", "other"]
 
 
 # ---------- Schemas ----------
@@ -20,14 +22,14 @@ class ActivityCreate(BaseModel):
     ending_date: str
     starting_time: str
     ending_time: str
-    activity_type: str = "other"
+    activity_type: ACTIVITY_TYPE = "other"
     latitude: float = 0
     longitude: float = 0
     estimated_cost: float = 0
     currency: str | None = None
     notes: str | None = None
     sort_order: int = 0
-    activity_data: dict = {}
+    activity_data: dict = Field(default_factory=dict)
 
 
 class ActivityUpdate(BaseModel):
@@ -36,7 +38,7 @@ class ActivityUpdate(BaseModel):
     ending_date: str | None = None
     starting_time: str | None = None
     ending_time: str | None = None
-    activity_type: str | None = None
+    activity_type: ACTIVITY_TYPE | None = None
     latitude: float | None = None
     longitude: float | None = None
     estimated_cost: float | None = None
@@ -46,33 +48,20 @@ class ActivityUpdate(BaseModel):
     activity_data: dict | None = None
 
 
-class ActivityBulkItem(BaseModel):
+class ActivityBulkItem(ActivityCreate):
     id: str | None = None
-    activity_name: str
-    starting_date: str
-    ending_date: str
-    starting_time: str
-    ending_time: str
-    activity_type: str = "other"
-    latitude: float = 0
-    longitude: float = 0
-    estimated_cost: float = 0
-    currency: str | None = None
-    notes: str | None = None
-    sort_order: int = 0
-    activity_data: dict = {}
 
 
 # ---------- Endpoints ----------
 
 @router.get("")
-async def list_activities(
+def list_activities(
     trip_id: str,
-    type: str | None = Query(None, description="Filter by activity_type"),
+    type: ACTIVITY_TYPE | None = Query(None, description="Filter by activity_type"),
     user: dict = Depends(get_current_user),
 ):
     sb = get_supabase()
-    _assert_trip_access(sb, trip_id, user["id"])
+    assert_trip_access(trip_id, user["id"], sb)
     q = sb.table("activity").select("*").eq("trip_id", trip_id)
     if type:
         q = q.eq("activity_type", type)
@@ -81,9 +70,9 @@ async def list_activities(
 
 
 @router.post("", status_code=201)
-async def create_activity(trip_id: str, body: ActivityCreate, user: dict = Depends(get_current_user)):
+def create_activity(trip_id: str, body: ActivityCreate, user: dict = Depends(get_current_user)):
     sb = get_supabase()
-    _assert_trip_access(sb, trip_id, user["id"])
+    assert_trip_access(trip_id, user["id"], sb)
     row = body.model_dump()
     row["trip_id"] = trip_id
     row["user_id"] = user["id"]
@@ -92,11 +81,11 @@ async def create_activity(trip_id: str, body: ActivityCreate, user: dict = Depen
 
 
 @router.patch("/{activity_id}")
-async def update_activity(
+def update_activity(
     trip_id: str, activity_id: str, body: ActivityUpdate, user: dict = Depends(get_current_user),
 ):
     sb = get_supabase()
-    _assert_trip_access(sb, trip_id, user["id"])
+    assert_trip_access(trip_id, user["id"], sb)
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(400, "No fields to update")
@@ -113,20 +102,20 @@ async def update_activity(
 
 
 @router.delete("/{activity_id}", status_code=204)
-async def delete_activity(trip_id: str, activity_id: str, user: dict = Depends(get_current_user)):
+def delete_activity(trip_id: str, activity_id: str, user: dict = Depends(get_current_user)):
     sb = get_supabase()
-    _assert_trip_access(sb, trip_id, user["id"])
+    assert_trip_access(trip_id, user["id"], sb)
     res = sb.table("activity").delete().eq("id", activity_id).eq("trip_id", trip_id).execute()
     if not res.data:
         raise HTTPException(404, "Activity not found")
 
 
 @router.put("/bulk")
-async def bulk_upsert_activities(
+def bulk_upsert_activities(
     trip_id: str, items: list[ActivityBulkItem], user: dict = Depends(get_current_user),
 ):
     sb = get_supabase()
-    _assert_trip_access(sb, trip_id, user["id"])
+    assert_trip_access(trip_id, user["id"], sb)
     rows = []
     for item in items:
         row = item.model_dump()
@@ -137,24 +126,3 @@ async def bulk_upsert_activities(
         rows.append(row)
     res = sb.table("activity").upsert(rows).execute()
     return res.data
-
-
-# ---------- Helpers ----------
-
-def _assert_trip_access(sb, trip_id: str, user_id: str):
-    trip = sb.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
-    if not trip.data:
-        raise HTTPException(404, "Trip not found")
-    if trip.data["user_id"] == user_id:
-        return
-    collab = (
-        sb.table("trip_collaborators")
-        .select("id")
-        .eq("trip_id", trip_id)
-        .eq("user_id", user_id)
-        .eq("invite_status", "accepted")
-        .maybe_single()
-        .execute()
-    )
-    if not collab.data:
-        raise HTTPException(403, "Not authorised")

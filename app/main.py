@@ -47,6 +47,7 @@ app.include_router(crud_trips.router)
 app.include_router(activities.router)
 app.include_router(trip_notes.router)
 app.include_router(collaborators.router)
+app.include_router(collaborators.accept_router)
 app.include_router(profiles.router)
 app.include_router(favorites.router)
 
