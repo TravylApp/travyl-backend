@@ -375,7 +375,17 @@ class BedrockExtractionError(Exception):
     pass
 
 
+_extract_cache: dict[str, ExtractionResponse] = {}
+_EXTRACT_CACHE_MAX = 64
+
+
 async def extract(request: ExtractionRequest) -> ExtractionResponse:
+    # Check cache — same prompt+city+answers = same extraction
+    cache_key = f"{request.prompt}|{request.city}|{request.country}|{json.dumps(request.answers, sort_keys=True)}"
+    if cache_key in _extract_cache:
+        log.info("Extraction cache hit")
+        return _extract_cache[cache_key]
+
     # Resolve user location
     if request.city and request.country:
         city, country = request.city, request.country
@@ -421,10 +431,16 @@ async def extract(request: ExtractionRequest) -> ExtractionResponse:
         raise BedrockExtractionError("Bedrock response did not contain a tool use block")
 
     if questions:
-        return ExtractionResponse(
+        result = ExtractionResponse(
             status="needs_clarification",
             extracted=extraction,
             questions=questions,
         )
+    else:
+        result = ExtractionResponse(status="complete", extracted=extraction)
 
-    return ExtractionResponse(status="complete", extracted=extraction)
+    # Cache the result (evict oldest if full)
+    if len(_extract_cache) >= _EXTRACT_CACHE_MAX:
+        _extract_cache.pop(next(iter(_extract_cache)))
+    _extract_cache[cache_key] = result
+    return result

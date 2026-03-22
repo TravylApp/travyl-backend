@@ -25,7 +25,8 @@ from app.schemas import (
 log = logging.getLogger(__name__)
 
 _UA = "TravylApp/1.0 (https://gotravyl.com; dev@gotravyl.com)"
-_TIMEOUT = aiohttp.ClientTimeout(total=20)
+_TIMEOUT = aiohttp.ClientTimeout(total=12)
+_OVERPASS_TIMEOUT = aiohttp.ClientTimeout(total=10)
 _HEADERS = {"User-Agent": _UA, "Accept-Encoding": "gzip, deflate"}
 
 _OVERPASS_URLS = [
@@ -285,13 +286,13 @@ _OVERPASS_BATCHES = [
 ]
 
 
-def _build_overpass_query(lat: float, lng: float, tags: list[str], radius: int = 8000) -> str:
+def _build_overpass_query(lat: float, lng: float, tags: list[str], radius: int = 5000) -> str:
     parts = []
     for tag in tags:
         parts.append(f'  node{tag}["name"](around:{radius},{lat},{lng});')
         parts.append(f'  way{tag}["name"](around:{radius},{lat},{lng});')
     union = "\n".join(parts)
-    return f"[out:json][timeout:30];\n(\n{union}\n);\nout center tags;"
+    return f"[out:json][timeout:8][maxsize:2097152];\n(\n{union}\n);\nout center tags;"
 
 
 def _parse_overpass_element(el: dict) -> tuple[POI, dict] | None:
@@ -343,7 +344,7 @@ async def _run_overpass_batch(session: aiohttp.ClientSession, query: str) -> lis
     for url in _OVERPASS_URLS:
         try:
             async with session.post(
-                url, data={"data": query}, timeout=_TIMEOUT,
+                url, data={"data": query}, timeout=_OVERPASS_TIMEOUT,
             ) as resp:
                 if resp.status == 429:
                     log.info("Overpass 429 on %s, trying mirror", url.split("//")[1].split("/")[0])
@@ -519,9 +520,9 @@ async def _enrich_pois_wikidata(
                 if wiki_title:
                     wiki_titles[idx] = wiki_title
 
-    # fetch Wikipedia summaries for the top 20 most notable POIs
+    # fetch Wikipedia summaries for the top 5 most notable POIs
     if wiki_titles:
-        ranked = sorted(wiki_titles.keys(), key=lambda i: _completeness(pois[i]), reverse=True)[:10]
+        ranked = sorted(wiki_titles.keys(), key=lambda i: _completeness(pois[i]), reverse=True)[:5]
         tasks = [_wikipedia_summary(session, wiki_titles[i]) for i in ranked]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1009,8 +1010,25 @@ async def _fetch_weather(session: aiohttp.ClientSession, extraction: TripExtract
 
     try:
         async with session.get(url, params=params) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
+            if resp.status == 400 and use_forecast:
+                # forecast may reject dates near the edge of its window — fall back to archive
+                log.info("Forecast 400, falling back to archive")
+                s_dt = start_dt.replace(year=start_dt.year - 1)
+                e_dt = datetime.strptime(end, "%Y-%m-%d").replace(year=start_dt.year - 1)
+                archive_params = {
+                    "latitude": str(lat), "longitude": str(lng),
+                    "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code,wind_speed_10m_max",
+                    "start_date": s_dt.strftime("%Y-%m-%d"),
+                    "end_date": e_dt.strftime("%Y-%m-%d"),
+                    "timezone": "auto",
+                }
+                async with session.get(_OPEN_METEO_ARCHIVE, params=archive_params) as resp2:
+                    resp2.raise_for_status()
+                    data = await resp2.json()
+                    use_forecast = False
+            else:
+                resp.raise_for_status()
+                data = await resp.json()
     except Exception as e_err:
         log.warning("Open-Meteo failed: %s", e_err)
         return []
@@ -1065,6 +1083,9 @@ async def _fetch_weather(session: aiohttp.ClientSession, extraction: TripExtract
     return weather
 
 
+_TTL_MATRIX = 21_600  # 6 hours
+
+
 async def compute_travel_matrix(
     pois: list[POI],
     mode: str | None = None,
@@ -1084,10 +1105,18 @@ async def compute_travel_matrix(
     profile = _ORS_PROFILES.get(mode, "driving-car")
     drive_mode = "walking" if profile == "foot-walking" else "driving"
 
+    # cache key based on sorted POI IDs + mode
+    ids_hash = hashlib.md5("|".join(sorted(p.id for p in pois)).encode()).hexdigest()[:12]
+    cache_key = f"matrix:{ids_hash}:{profile}"
+    cached = await _cget(cache_key)
+    if cached:
+        return cached
+
     if settings.openrouteservice_api_key:
         async with aiohttp.ClientSession(headers=_HEADERS, timeout=_TIMEOUT) as session:
             matrix = await _ors_matrix(session, pois, profile)
         if matrix:
+            await _cset(cache_key, matrix, _TTL_MATRIX)
             return matrix
         log.info("ORS matrix failed, falling back to haversine")
 
@@ -1099,6 +1128,7 @@ async def compute_travel_matrix(
             mins = _travel_min_haversine(a.lat, a.lng, b.lat, b.lng, drive_mode)
             result[a.id][b.id] = mins
             result[b.id][a.id] = mins
+    await _cset(cache_key, result, _TTL_MATRIX)
     return result
 
 
