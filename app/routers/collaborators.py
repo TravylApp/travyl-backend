@@ -2,22 +2,17 @@
 
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.access import assert_trip_access, assert_trip_owner
+from app.access import ROLE_TYPE, assert_trip_access, assert_trip_owner, validate_uuid
 from app.auth import get_current_user
 from app.services.supabase import get_supabase
 
 router = APIRouter(prefix="/api/trips/{trip_id}/collaborators", tags=["collaborators"])
-
-ROLE_TYPE = Literal["viewer", "commenter", "editor"]
 _PERMISSION_TO_ROLE = {"view": "viewer", "comment": "commenter", "edit": "editor"}
 
-
-# ---------- Schemas ----------
 
 class InviteCreate(BaseModel):
     invited_email: str
@@ -28,15 +23,15 @@ class CollaboratorRoleUpdate(BaseModel):
     role_type: ROLE_TYPE
 
 
-# ---------- Trip-scoped endpoints ----------
 
 @router.get("")
 def list_collaborators(trip_id: str, user: dict = Depends(get_current_user)):
+    validate_uuid(trip_id, "Trip")
     sb = get_supabase()
     assert_trip_access(trip_id, user["id"], sb)
     res = (
         sb.table("trip_collaborators")
-        .select("*")
+        .select("id, trip_id, user_id, invited_email, role_type, invite_status, created_at, accepted_at")
         .eq("trip_id", trip_id)
         .order("created_at")
         .execute()
@@ -46,6 +41,7 @@ def list_collaborators(trip_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/invite", status_code=201)
 def invite_collaborator(trip_id: str, body: InviteCreate, user: dict = Depends(get_current_user)):
+    validate_uuid(trip_id, "Trip")
     sb = get_supabase()
     assert_trip_owner(trip_id, user["id"], sb)
 
@@ -58,7 +54,7 @@ def invite_collaborator(trip_id: str, body: InviteCreate, user: dict = Depends(g
         .maybe_single()
         .execute()
     )
-    if existing.data:
+    if existing and existing.data:
         raise HTTPException(409, "Pending invite already exists for this email")
 
     row = {
@@ -78,6 +74,8 @@ def update_collaborator_role(
     trip_id: str, collaborator_id: str, body: CollaboratorRoleUpdate,
     user: dict = Depends(get_current_user),
 ):
+    validate_uuid(trip_id, "Trip")
+    validate_uuid(collaborator_id, "Collaborator")
     sb = get_supabase()
     assert_trip_owner(trip_id, user["id"], sb)
     res = (
@@ -96,6 +94,8 @@ def update_collaborator_role(
 def remove_collaborator(
     trip_id: str, collaborator_id: str, user: dict = Depends(get_current_user),
 ):
+    validate_uuid(trip_id, "Trip")
+    validate_uuid(collaborator_id, "Collaborator")
     sb = get_supabase()
     assert_trip_owner(trip_id, user["id"], sb)
     res = (
@@ -111,9 +111,10 @@ def remove_collaborator(
 
 @router.post("/join", status_code=201)
 def join_via_link(trip_id: str, user: dict = Depends(get_current_user)):
+    validate_uuid(trip_id, "Trip")
     sb = get_supabase()
     trip = sb.table("trips").select("visibility, link_permission, user_id").eq("id", trip_id).maybe_single().execute()
-    if not trip.data:
+    if not trip or not trip.data:
         raise HTTPException(404, "Trip not found")
     if trip.data["visibility"] not in ("link", "public"):
         raise HTTPException(403, "Trip is not shared via link")
@@ -128,7 +129,7 @@ def join_via_link(trip_id: str, user: dict = Depends(get_current_user)):
         .maybe_single()
         .execute()
     )
-    if existing.data:
+    if existing and existing.data:
         raise HTTPException(409, "Already a collaborator")
 
     role = trip.data.get("link_permission", "view")
@@ -144,8 +145,7 @@ def join_via_link(trip_id: str, user: dict = Depends(get_current_user)):
     return res.data[0]
 
 
-# ---------- Non-trip-scoped accept endpoint ----------
-# Registered separately in main.py as `accept_router`
+# registered separately in main.py as accept_router
 
 accept_router = APIRouter(prefix="/api/collaborators", tags=["collaborators"])
 
@@ -153,6 +153,18 @@ accept_router = APIRouter(prefix="/api/collaborators", tags=["collaborators"])
 @accept_router.post("/accept/{invite_token}")
 def accept_invite(invite_token: str, user: dict = Depends(get_current_user)):
     sb = get_supabase()
+    invite = (
+        sb.table("trip_collaborators")
+        .select("id, invited_email, invite_status")
+        .eq("invite_token", invite_token)
+        .eq("invite_status", "pending")
+        .maybe_single()
+        .execute()
+    )
+    if not invite or not invite.data:
+        raise HTTPException(404, "Invite not found or already accepted")
+    if invite.data["invited_email"] != user.get("email"):
+        raise HTTPException(403, "This invite was sent to a different email")
     res = (
         sb.table("trip_collaborators")
         .update({
@@ -160,10 +172,7 @@ def accept_invite(invite_token: str, user: dict = Depends(get_current_user)):
             "invite_status": "accepted",
             "accepted_at": datetime.now(timezone.utc).isoformat(),
         })
-        .eq("invite_token", invite_token)
-        .eq("invite_status", "pending")
+        .eq("id", invite.data["id"])
         .execute()
     )
-    if not res.data:
-        raise HTTPException(404, "Invite not found or already accepted")
     return res.data[0]

@@ -1,11 +1,22 @@
 import json
 import logging
 import os
+from pathlib import Path
 
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 
 log = logging.getLogger(__name__)
+
+# load .env early so AWS_SECRET_NAME is available before Secrets Manager fetch
+_env_file = Path(__file__).resolve().parent.parent / ".env"
+if _env_file.is_file():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip())
 
 
 def _load_aws_secrets() -> dict:
