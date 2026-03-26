@@ -47,7 +47,15 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_key: str = ""
     supabase_jwt_secret: str = ""
-    allowed_origins: List[str] = ["http://localhost:3000"]
+    allowed_origins: List[str] = [
+        # Production
+        "https://gotravyl.com",
+        "https://www.gotravyl.com",
+        # Dev
+        "https://dev.gotravyl.com",
+        # Local
+        "http://localhost:3000",
+    ]
 
     # AWS / Bedrock
     aws_region: str = "us-east-1"
