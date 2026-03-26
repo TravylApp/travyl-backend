@@ -232,3 +232,54 @@ class MenuResponse(BaseModel):
     menu_url: str | None = None
     items: list[MenuItem] = []
     source: str = "ai_extracted"  # or "serpapi"
+
+
+# --- Place detail / suggest / enrich models ---
+
+class PlaceDetail(BaseModel):
+    id: str
+    name: str
+    address: str | None = None
+    city: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    rating: float | None = None
+    phone: str | None = None
+    website: str | None = None
+    description: str | None = None
+    images: list[str] = []
+    image_url: str | None = None
+    categories: list[str] = []
+    hours: str | None = None
+    price: int | None = None
+    reviewCount: int | None = None
+
+
+class SuggestionItem(BaseModel):
+    id: str
+    name: str
+    category: str
+    imageUrl: str
+    imageUrls: list[str] = []
+    rating: float | None = None
+    location: str
+    latitude: float
+    longitude: float
+    description: str
+    source: str = "ai"
+
+
+class SuggestResponse(BaseModel):
+    suggestions: list[SuggestionItem] = []
+    hasMore: bool = False
+    nextPage: int | None = None
+
+
+class EnrichPhoto(BaseModel):
+    thumbnail: str
+    fullsize: str
+    title: str
+
+
+class EnrichResponse(BaseModel):
+    photos: list[EnrichPhoto] = []

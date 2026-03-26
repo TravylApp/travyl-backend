@@ -12,10 +12,12 @@ from app.routers import (
     favorites,
     flights,
     hotels,
+    images,
     places,
     profiles,
     trip_notes,
     trips,
+    weather,
 )
 from app.services.bedrock import warm_caches
 
@@ -41,6 +43,8 @@ app.include_router(flights.router)
 app.include_router(hotels.router)
 app.include_router(places.router)
 app.include_router(trips.router)
+app.include_router(weather.router)
+app.include_router(images.router, prefix="/api/images")
 
 # CRUD routers
 app.include_router(crud_trips.router)

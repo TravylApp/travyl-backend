@@ -1,13 +1,18 @@
 import asyncio
 import json
 import logging
+import re
 from math import log2
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
-from app.schemas import POI, MenuItem, MenuResponse
+from app.schemas import (
+    POI, MenuItem, MenuResponse,
+    PlaceDetail, SuggestionItem, SuggestResponse,
+    EnrichPhoto, EnrichResponse,
+)
 from app.services.bedrock import _get_bedrock
 
 router = APIRouter(prefix="/api/places", tags=["places"])
@@ -71,6 +76,28 @@ _SUBCATEGORY_TAGS = {
     "beach": ["beach", "relaxation", "nature"],
     "mall": ["shopping"],
     "marketplace": ["shopping", "food"],
+}
+
+# Page queries for suggest endpoint — rotated per page for variety
+_PAGE_QUERIES = [
+    "top things to do",
+    "top tourist attractions",
+    "best restaurants",
+    "best bars and nightlife",
+    "museums and cultural sites",
+    "outdoor activities",
+    "guided tours and excursions",
+]
+
+_SUGGEST_CATEGORY_QUERIES: dict[str, str] = {
+    "all": _PAGE_QUERIES[0],
+    "sightseeing": _PAGE_QUERIES[1],
+    "dining": _PAGE_QUERIES[2],
+    "nightlife": _PAGE_QUERIES[3],
+    "cultural": _PAGE_QUERIES[4],
+    "shopping": "shopping",
+    "outdoor": _PAGE_QUERIES[5],
+    "tour": _PAGE_QUERIES[6],
 }
 
 _MENU_EXTRACT_PROMPT = """\
@@ -372,4 +399,248 @@ async def get_menu(
         menu_url=menu_url,
         items=deduped,
         source="ai_extracted" if deduped else "serpapi",
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/places/suggest — local suggestion search
+# ---------------------------------------------------------------------------
+
+def _infer_category(place_type: str | None, fallback: str) -> str:
+    """Map a SerpAPI place type string to a frontend category slug."""
+    if not place_type:
+        return fallback
+    t = place_type.lower()
+    if any(kw in t for kw in ("restaurant", "cafe", "bakery", "food", "bar")):
+        return "dining"
+    if any(kw in t for kw in ("museum", "gallery", "theater", "theatre", "library")):
+        return "cultural"
+    if any(kw in t for kw in ("park", "garden", "beach", "trail", "nature")):
+        return "outdoor"
+    if any(kw in t for kw in ("shop", "store", "mall", "market")):
+        return "shopping"
+    if any(kw in t for kw in ("club", "lounge", "nightlife")):
+        return "nightlife"
+    if any(kw in t for kw in ("tour", "agency")):
+        return "tour"
+    if any(kw in t for kw in ("church", "temple", "monument", "landmark", "attraction")):
+        return "sightseeing"
+    return fallback
+
+
+def _upscale_thumbnail(url: str) -> str:
+    """Replace Google thumbnail size params with a larger variant."""
+    if not url:
+        return url
+    if re.search(r"lh\d*\.googleusercontent\.com", url):
+        return re.sub(r"=([whs]\d+(-[a-zA-Z0-9]+)*)$", "=w800-h600", url)
+    return url
+
+
+def _extract_image_urls(place: dict) -> list[str]:
+    """Pull image URLs from a SerpAPI local result, preferring non-encrypted ones."""
+    seen: set[str] = set()
+    urls: list[str] = []
+    fallbacks: list[str] = []
+
+    def _push(raw: str) -> None:
+        if not raw:
+            return
+        if "encrypted-tbn" in raw:
+            if raw not in seen:
+                seen.add(raw)
+                fallbacks.append(raw)
+            return
+        upscaled = _upscale_thumbnail(raw)
+        if upscaled and upscaled not in seen:
+            seen.add(upscaled)
+            urls.append(upscaled)
+
+    thumb = place.get("thumbnail")
+    if thumb:
+        _push(thumb)
+
+    for p in place.get("photos", []):
+        _push(p.get("original") or p.get("url") or p.get("thumbnail") or p.get("image") or "")
+
+    return urls if urls else fallbacks
+
+
+@router.get("/suggest", response_model=SuggestResponse)
+async def suggest_places(
+    destination: str = Query(..., description="Destination name (e.g. 'Paris, France')"),
+    category: str = Query("all", description="Category filter"),
+    q: str | None = Query(None, description="Custom search query"),
+    page: int = Query(0, ge=0, description="Page index for paginated browsing"),
+):
+    """Local suggestion search — mirrors the frontend /api/suggest route."""
+    if not settings.serpapi_key:
+        return SuggestResponse()
+
+    # Build SerpAPI location string
+    parts = [p.strip() for p in destination.split(",")]
+    serp_location = f"{parts[0]}, {parts[-1]}" if len(parts) >= 2 else destination
+
+    # Determine search query
+    if q:
+        query = q
+        has_more = False
+    elif category != "all":
+        query = _SUGGEST_CATEGORY_QUERIES.get(category, _SUGGEST_CATEGORY_QUERIES["all"])
+        has_more = False
+    else:
+        if page >= len(_PAGE_QUERIES):
+            return SuggestResponse()
+        query = _PAGE_QUERIES[page]
+        has_more = page + 1 < len(_PAGE_QUERIES)
+
+    data = await _serpapi({
+        "engine": "google_local",
+        "q": query,
+        "location": serp_location,
+    })
+    if not data:
+        return SuggestResponse()
+
+    local_results = data.get("local_results", [])[:20]
+
+    suggestions: list[SuggestionItem] = []
+    for i, place in enumerate(local_results):
+        title = place.get("title")
+        gps = place.get("gps_coordinates", {})
+        if not title:
+            continue
+
+        image_urls = _extract_image_urls(place)
+
+        suggestions.append(SuggestionItem(
+            id=f"serp-{place.get('place_id', i)}",
+            name=title,
+            category=_infer_category(place.get("type"), "sightseeing"),
+            imageUrl=image_urls[0] if image_urls else "",
+            imageUrls=image_urls,
+            rating=place.get("rating"),
+            location=place.get("address", ""),
+            latitude=gps.get("latitude", 0),
+            longitude=gps.get("longitude", 0),
+            description=place.get("description", ""),
+            source="ai",
+        ))
+
+    next_page = page + 1 if has_more else None
+    log.info("Suggest: %d results for '%s' in '%s'", len(suggestions), query, serp_location)
+    return SuggestResponse(suggestions=suggestions, hasMore=has_more, nextPage=next_page)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/places/enrich — photo enrichment
+# ---------------------------------------------------------------------------
+
+@router.get("/enrich", response_model=EnrichResponse)
+async def enrich_place(
+    placeId: str = Query(..., description="SerpAPI data_id / place_id"),
+    name: str = Query("", description="Place name (used as fallback title)"),
+):
+    """Fetch high-res photos for a place via SerpAPI google_maps_photos."""
+    if not settings.serpapi_key:
+        raise HTTPException(status_code=503, detail="SerpAPI not configured")
+
+    data = await _serpapi({
+        "engine": "google_maps_photos",
+        "data_id": placeId,
+    })
+
+    photos: list[EnrichPhoto] = []
+    if data:
+        for photo in data.get("photos", []):
+            fullsize = photo.get("image") or photo.get("fullsize") or photo.get("thumbnail") or ""
+            photos.append(EnrichPhoto(
+                thumbnail=photo.get("thumbnail", ""),
+                fullsize=fullsize,
+                title=photo.get("title") or name,
+            ))
+
+    log.info("Enrich: %d photos for placeId=%s name=%s", len(photos), placeId, name)
+    return EnrichResponse(photos=photos)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/places/{place_id} — place detail
+# ---------------------------------------------------------------------------
+
+def _format_hours(hours_data: dict | list | None) -> str | None:
+    """Convert SerpAPI operating_hours into a readable string."""
+    if not hours_data:
+        return None
+    if isinstance(hours_data, str):
+        return hours_data
+    if isinstance(hours_data, dict):
+        parts = [f"{day}: {times}" for day, times in hours_data.items()]
+        return "; ".join(parts) if parts else None
+    return None
+
+
+@router.get("/{place_id}", response_model=PlaceDetail)
+async def get_place_detail(place_id: str):
+    """Fetch detailed info for a single place using its SerpAPI data_id."""
+    if not settings.serpapi_key:
+        raise HTTPException(status_code=503, detail="SerpAPI not configured")
+
+    data = await _serpapi({
+        "engine": "google_maps",
+        "data_id": place_id,
+        "hl": "en",
+    })
+    if not data:
+        raise HTTPException(status_code=502, detail="Failed to fetch place details")
+
+    # SerpAPI returns place_results for single-place lookups
+    place = data.get("place_results", data)
+
+    gps = place.get("gps_coordinates", {})
+
+    # Collect images
+    images: list[str] = []
+    thumb = place.get("thumbnail")
+    if thumb:
+        images.append(thumb)
+    for img in place.get("images", []):
+        url = img.get("image") or img.get("thumbnail") or ""
+        if url and url not in images:
+            images.append(url)
+
+    # Categories / type
+    categories: list[str] = []
+    place_type = place.get("type")
+    if place_type:
+        if isinstance(place_type, list):
+            categories = place_type
+        else:
+            categories = [t.strip() for t in str(place_type).split(",")]
+
+    # Extract city from address
+    address = place.get("address")
+    city: str | None = None
+    if address:
+        addr_parts = [p.strip() for p in address.split(",")]
+        if len(addr_parts) >= 2:
+            city = addr_parts[-2]  # second-to-last is usually city
+
+    return PlaceDetail(
+        id=place_id,
+        name=place.get("title", ""),
+        address=address,
+        city=city,
+        latitude=gps.get("latitude"),
+        longitude=gps.get("longitude"),
+        rating=place.get("rating"),
+        phone=place.get("phone"),
+        website=place.get("website"),
+        description=place.get("description"),
+        images=images,
+        image_url=images[0] if images else None,
+        categories=categories,
+        hours=_format_hours(place.get("operating_hours")),
+        price=_parse_price_level(place.get("price")),
+        reviewCount=place.get("reviews"),
     )
