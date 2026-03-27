@@ -60,8 +60,9 @@ async def place_image(
     name: str = Query(..., description="Place name (e.g. 'Colosseum')"),
     city: str | None = Query(None, description="City for context (e.g. 'Rome')"),
 ):
-    """Fetch the best image for a place using SerpAPI + AI selection."""
+    """Fetch the best image for a place. Cascades through SerpAPI → Unsplash search → Unsplash random.
+    Always returns an image unless every external API is unreachable."""
     result = await get_place_image(name, city)
     if not result:
-        raise HTTPException(status_code=404, detail="No images found")
+        raise HTTPException(status_code=503, detail="All image providers are currently unavailable")
     return result
