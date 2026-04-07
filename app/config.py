@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     openrouteservice_api_key: str = ""
     unsplash_access_key: str = ""
     mapbox_access_token: str = ""
+    visualcrossing_api_key: str = ""
+    predicthq_token: str = ""
+    graphhopper_api_key: str = ""
 
     class Config:
         # AWS_SECRET_NAME in env (written by deploy) triggers Secrets Manager loading above.

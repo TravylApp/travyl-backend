@@ -6,6 +6,8 @@ import re
 import aiohttp
 from fastapi import APIRouter, HTTPException, Query
 
+from app.config import settings
+
 router = APIRouter(prefix="/api/weather", tags=["weather"])
 log = logging.getLogger(__name__)
 
@@ -163,5 +165,159 @@ async def get_forecast(
         "location": display_name,
         "timezone": data.get("timezone", ""),
         "current": current,
+        "forecast": forecast,
+    }
+
+
+# =============================================================================
+# Visual Crossing Weather API (Issue #579)
+# Alternative provider with air quality + astronomy data
+# =============================================================================
+
+_VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+
+
+@router.get("/visualcrossing")
+async def get_visualcrossing_forecast(
+    location: str = Query(..., description="City name or 'lat,lng'"),
+    start_date: str | None = Query(None, description="Start date (YYYY-MM-DD), defaults to today"),
+    end_date: str | None = Query(None, description="End date (YYYY-MM-DD), defaults to start + 7 days"),
+    include_aqi: bool = Query(default=True, description="Include air quality data"),
+    include_astronomy: bool = Query(default=True, description="Include sunrise/sunset/moon phase"),
+):
+    """Fetch weather from Visual Crossing API with air quality & astronomy.
+    
+    This endpoint provides enhanced weather data including:
+    - Air quality index (AQI) and pollutant levels
+    - UV index and solar radiation
+    - Moon phase and illumination
+    - More detailed precipitation types
+    
+    Requires VISUALCROSSING_API_KEY in environment.
+    """
+    if not settings.visualcrossing_api_key:
+        raise HTTPException(status_code=503, detail="Visual Crossing API key not configured")
+    
+    # Build date range
+    if start_date:
+        s = start_date
+        if end_date:
+            e = end_date
+        else:
+            # Default to 7 days from start
+            from datetime import datetime, timedelta
+            s_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            e_dt = s_dt + timedelta(days=7)
+            e = e_dt.strftime("%Y-%m-%d")
+    else:
+        # Default to today + 7 days
+        from datetime import datetime, timedelta
+        today = datetime.now()
+        s = today.strftime("%Y-%m-%d")
+        e_dt = today + timedelta(days=7)
+        e = e_dt.strftime("%Y-%m-%d")
+    
+    # Build URL with all the extra data elements
+    location_encoded = location.replace(" ", "%20")
+    url = f"{_VISUAL_CROSSING_URL}/{location_encoded}/{s}/{e}"
+    
+    params = {
+        "key": settings.visualcrossing_api_key,
+        "unitGroup": "us",  # Fahrenheit, mph
+        "include": "days,current",
+    }
+    
+    if include_aqi:
+        params["elements"] = params.get("elements", "") + ",aqi,pm2p5,pm10,o3,no2,so2,co"
+    if include_astronomy:
+        params["elements"] = params.get("elements", "") + ",sunrise,sunset,moonrise,moonset,moonphase"
+    
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            async with session.get(url, params=params) as resp:
+                if resp.status == 401:
+                    raise HTTPException(status_code=503, detail="Invalid Visual Crossing API key")
+                if resp.status == 429:
+                    raise HTTPException(status_code=429, detail="Visual Crossing rate limit exceeded")
+                resp.raise_for_status()
+                data = await resp.json()
+    except aiohttp.ClientError as e:
+        log.warning("Visual Crossing request failed: %s", e)
+        raise HTTPException(status_code=502, detail="Visual Crossing API request failed")
+    
+    # Parse response
+    days = data.get("days", [])
+    current = data.get("currentConditions", {})
+    
+    # Build enriched forecast
+    forecast = []
+    for day in days:
+        day_data = {
+            "date": day.get("datetime"),
+            "high": day.get("tempmax"),
+            "low": day.get("tempmin"),
+            "conditions": day.get("conditions"),
+            "description": day.get("description"),
+            "icon": day.get("icon"),
+            "precip": day.get("precip"),
+            "precipprob": day.get("precipprob"),
+            "preciptype": day.get("preciptype"),
+            "humidity": day.get("humidity"),
+            "windspeed": day.get("windspeed"),
+            "uvindex": day.get("uvindex"),
+            "visibility": day.get("visibility"),
+        }
+        
+        # Add air quality if available
+        if "aqi" in day:
+            day_data["air_quality"] = {
+                "aqi": day.get("aqi"),
+                "pm2_5": day.get("pm2p5"),
+                "pm10": day.get("pm10"),
+                "o3": day.get("o3"),
+                "no2": day.get("no2"),
+                "so2": day.get("so2"),
+                "co": day.get("co"),
+            }
+        
+        # Add astronomy if available
+        if "sunrise" in day:
+            day_data["astronomy"] = {
+                "sunrise": day.get("sunrise"),
+                "sunset": day.get("sunset"),
+                "moonrise": day.get("moonrise"),
+                "moonset": day.get("moonset"),
+                "moonphase": day.get("moonphase"),
+                "moonillumination": day.get("moonillumination"),
+            }
+        
+        forecast.append(day_data)
+    
+    # Current conditions
+    current_out = {
+        "temp": current.get("temp"),
+        "feelslike": current.get("feelslike"),
+        "conditions": current.get("conditions"),
+        "humidity": current.get("humidity"),
+        "windspeed": current.get("windspeed"),
+        "uvindex": current.get("uvindex"),
+    }
+    
+    if "aqi" in current:
+        current_out["air_quality"] = {
+            "aqi": current.get("aqi"),
+            "pm2_5": current.get("pm2p5"),
+            "pm10": current.get("pm10"),
+        }
+    
+    log.info("Visual Crossing: %d days for %s", len(forecast), data.get("resolvedAddress", location))
+    
+    return {
+        "location": data.get("resolvedAddress", location),
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        "timezone": data.get("timezone"),
+        "source": "visualcrossing",
+        "current": current_out,
         "forecast": forecast,
     }
