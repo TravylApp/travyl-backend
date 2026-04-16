@@ -2,6 +2,7 @@
 
 import logging
 import math
+import re
 import time as _time
 from datetime import datetime, timedelta
 
@@ -189,12 +190,20 @@ def _find_must_visit_indices(
     names_lower = [n.lower() for n in must_visit_names]
     indices = []
     for i, (poi, _) in enumerate(scored_pois):
+        if "must_visit" in poi.tags:
+            indices.append(i)
+            continue
         poi_name_lower = poi.name.lower()
         for target in names_lower:
             if target in poi_name_lower or (len(poi_name_lower) >= 4 and poi_name_lower in target):
                 indices.append(i)
                 break
     return indices
+
+
+def _is_multiday_venue(poi: POI) -> bool:
+    """Check if a POI is a multi-day venue/event (created by _fetch_must_visit_pois)."""
+    return "must_visit" in poi.tags and poi.visit_duration_min >= 360
 
 
 def _travel(matrix: dict[str, dict[str, int]], a_id: str, b_id: str) -> int:
@@ -296,6 +305,35 @@ def _greedy_time_assign(
         options.sort(key=lambda x: x[1])
         return options[0][0]
 
+    # step 0: pin multi-day venue/event POIs to specific days FIRST
+    # these are the primary trip purpose and must be scheduled before anything else
+    multiday_indices = [
+        i for i in must_visit_indices
+        if _is_multiday_venue(scored_pois[i][0])
+    ]
+    _DAY_SUFFIX_RE = re.compile(r"\(Day\s+(\d+)\)")
+    if multiday_indices:
+        # sort by day number suffix (Day 1, Day 2, ...) to pin sequentially
+        def _day_num(idx: int) -> int:
+            m = _DAY_SUFFIX_RE.search(scored_pois[idx][0].name)
+            return int(m.group(1)) if m else 0
+        multiday_indices.sort(key=_day_num)
+
+        for i, p_idx in enumerate(multiday_indices):
+            if p_idx in assigned_set:
+                continue
+            # pin to day i (or best available if day i is full)
+            target_day = i if i < num_days else None
+            if target_day is not None:
+                cost = _day_cost(p_idx, target_day)
+                if cost is not None:
+                    _assign(p_idx, target_day)
+                    continue
+            # fallback: find any day that fits
+            d = _best_day(p_idx)
+            if d is not None:
+                _assign(p_idx, d)
+
     # step 1: reserve meal slots — dynamic count per day based on time bounds
     skip_meals = meals is not None and meals.include_in_itinerary is False
     restaurant_indices = [
@@ -328,7 +366,7 @@ def _greedy_time_assign(
                 meals_per_day[d] += 1
                 break
 
-    # step 2: place must-visit POIs
+    # step 2: place remaining (non-multiday) must-visit POIs
     for p_idx in must_visit_indices:
         if p_idx in assigned_set:
             continue

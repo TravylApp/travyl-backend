@@ -204,6 +204,23 @@ _ORS_PROFILES = {
 _MAX_POIS = {"attraction": 100, "restaurant": 60, "nightlife": 30,
              "nature": 30, "shopping": 20, "entertainment": 20}
 
+# venues/events that should consume full days (or large time blocks)
+_VENUE_KEYWORDS = {
+    "disneyland", "disney world", "disneyworld", "magic kingdom",
+    "universal studios", "universal orlando", "legoland", "seaworld",
+    "six flags", "cedar point", "busch gardens", "knott's berry farm",
+    "california adventure", "epcot", "hollywood studios", "animal kingdom",
+    "water park", "theme park", "amusement park",
+}
+
+_EVENT_KEYWORDS = {
+    "edc", "coachella", "lollapalooza", "burning man", "sxsw",
+    "tomorrowland", "ultra music festival", "bonnaroo", "glastonbury",
+    "comic-con", "comiccon", "comic con", "formula 1", "f1 grand prix",
+    "super bowl", "world cup", "olympics", "concert", "festival",
+    "marathon", "convention",
+}
+
 
 async def _noop(default):
     return default
@@ -693,6 +710,142 @@ async def _fetch_dietary_restaurants(
 
     await _cset(cache_key, pois, _TTL_SERP)
     log.info("SerpAPI dietary restaurants: %d results for %s", len(pois), city)
+    return pois
+
+
+def _is_venue_centric(name: str) -> bool:
+    lower = name.lower()
+    return any(kw in lower for kw in _VENUE_KEYWORDS)
+
+
+def _is_event_centric(name: str) -> bool:
+    lower = name.lower()
+    return any(kw in lower for kw in _EVENT_KEYWORDS)
+
+
+def _must_visit_duration(name: str) -> int:
+    """Return per-day visit duration for a must_visit item."""
+    if _is_venue_centric(name):
+        return 480  # 8 hours — full day at a theme park
+    if _is_event_centric(name):
+        return 360  # 6 hours — large event block
+    return 120  # 2 hours — notable landmark/attraction
+
+
+async def _fetch_must_visit_pois(
+    session: aiohttp.ClientSession,
+    extraction: TripExtraction,
+) -> list[POI]:
+    """Search specifically for each must_visit item so they exist in the POI pool.
+
+    For venue/event-centric items, creates multi-day POIs so the scheduler
+    can allocate them across the full trip.
+    """
+    must_visit = extraction.constraints.must_visit
+    if not must_visit:
+        return []
+
+    city = extraction.destination.city
+    country = extraction.destination.country
+    lat, lng = extraction.destination.lat, extraction.destination.lng
+    num_days = extraction.duration_days or 1
+
+    # search for each must_visit item in parallel (cap at 10)
+    capped = must_visit[:10]
+    coros = [
+        _serpapi(session, {
+            "engine": "google_maps",
+            "q": f"{name} in {city} {country}",
+            "ll": f"@{lat},{lng},14z",
+            "hl": "en",
+        })
+        for name in capped
+    ]
+    results = await asyncio.gather(*coros, return_exceptions=True)
+
+    pois: list[POI] = []
+    seen_ids: set[str] = set()
+
+    for name, result in zip(capped, results):
+        duration = _must_visit_duration(name)
+        is_venue = _is_venue_centric(name)
+        is_event = _is_event_centric(name)
+        is_multiday = is_venue or is_event
+
+        # how many days should this item occupy
+        if is_venue:
+            # theme parks: occupy most of the trip, capped at 4 days
+            venue_days = min(max(1, num_days - 1), 4) if num_days > 2 else num_days
+        elif is_event:
+            # events: typically 2-3 days of the trip
+            venue_days = min(3, num_days)
+        else:
+            venue_days = 1
+
+        found_from_serp = False
+        if not isinstance(result, (Exception, type(None))):
+            serp_pois = _parse_serp_maps_results(result, "attractions")
+            # find the best match — prefer name overlap
+            name_lower = name.lower()
+            serp_pois.sort(
+                key=lambda p: (name_lower in p.name.lower(), p.rating or 0),
+                reverse=True,
+            )
+            if serp_pois:
+                base_poi = serp_pois[0]
+                found_from_serp = True
+
+                if is_multiday:
+                    for day_num in range(venue_days):
+                        poi = base_poi.model_copy(update={
+                            "id": f"{base_poi.id}_mv_{day_num}",
+                            "name": f"{base_poi.name} (Day {day_num + 1})" if venue_days > 1 else base_poi.name,
+                            "visit_duration_min": duration,
+                            "tags": list(set(base_poi.tags + ["must_visit"])),
+                        })
+                        if poi.id not in seen_ids:
+                            seen_ids.add(poi.id)
+                            pois.append(poi)
+                else:
+                    poi = base_poi.model_copy(update={
+                        "visit_duration_min": max(base_poi.visit_duration_min, duration),
+                        "tags": list(set(base_poi.tags + ["must_visit"])),
+                    })
+                    if poi.id not in seen_ids:
+                        seen_ids.add(poi.id)
+                        pois.append(poi)
+
+        # fallback: create synthetic POI at destination center
+        if not found_from_serp:
+            if is_multiday:
+                for day_num in range(venue_days):
+                    syn_id = f"mv_{name.lower().replace(' ', '_')}_{day_num}"
+                    if syn_id not in seen_ids:
+                        seen_ids.add(syn_id)
+                        pois.append(POI(
+                            id=syn_id,
+                            name=f"{name} (Day {day_num + 1})" if venue_days > 1 else name,
+                            lat=lat, lng=lng,
+                            category="attraction", subcategory="attraction",
+                            visit_duration_min=duration,
+                            tags=["must_visit"],
+                            source="synthetic",
+                        ))
+            else:
+                syn_id = f"mv_{name.lower().replace(' ', '_')}"
+                if syn_id not in seen_ids:
+                    seen_ids.add(syn_id)
+                    pois.append(POI(
+                        id=syn_id,
+                        name=name,
+                        lat=lat, lng=lng,
+                        category="attraction", subcategory="attraction",
+                        visit_duration_min=duration,
+                        tags=["must_visit"],
+                        source="synthetic",
+                    ))
+
+    log.info("Must-visit POIs: %d results for %s", len(pois), must_visit)
     return pois
 
 
@@ -1246,6 +1399,7 @@ async def acquire(
             _fetch_serp_maps(session, extraction, "attractions"),
             _fetch_serp_maps(session, extraction, "restaurants"),
             _fetch_dietary_restaurants(session, extraction),
+            _fetch_must_visit_pois(session, extraction),
             _fetch_serp_events(session, extraction),
             _fetch_serp_hotels(session, extraction) if not is_local else _noop([]),
             _fetch_serp_flights(session, extraction, origin_city, origin_country) if not is_local else _noop([]),
@@ -1261,12 +1415,13 @@ async def acquire(
             return val
 
         (raw_overpass, raw_attractions, raw_restaurants, raw_dietary,
-         raw_events, raw_hotels, raw_flights, raw_weather, raw_photo) = results
+         raw_must_visit, raw_events, raw_hotels, raw_flights, raw_weather, raw_photo) = results
 
         overpass_pois = _safe(raw_overpass, [])
         serp_attractions = _safe(raw_attractions, [])
         serp_restaurants = _safe(raw_restaurants, [])
         dietary_restaurants = _safe(raw_dietary, [])
+        must_visit_pois = _safe(raw_must_visit, [])
         events = _safe(raw_events, [])
         hotels = _safe(raw_hotels, [])
         flights = _safe(raw_flights, [])
@@ -1284,10 +1439,16 @@ async def acquire(
         serp_pois = serp_attractions + serp_restaurants
         pois = _merge_pois(serp_pois, overpass_pois)
 
+        # must_visit POIs go first — they take priority and won't be deduped away
+        if must_visit_pois:
+            mv_ids = {mv.id for mv in must_visit_pois}
+            pois = must_visit_pois + [p for p in pois if p.id not in mv_ids]
+
         log.info(
-            "Stage 2 complete%s: %d POIs (%d serp + %d osm), %d events, %d hotels, %d flights, %d weather days",
+            "Stage 2 complete%s: %d POIs (%d serp + %d osm + %d must-visit), %d events, %d hotels, %d flights, %d weather days",
             " (local)" if is_local else "",
-            len(pois), len(serp_pois), len(overpass_pois), len(events), len(hotels), len(flights), len(weather),
+            len(pois), len(serp_pois), len(overpass_pois), len(must_visit_pois),
+            len(events), len(hotels), len(flights), len(weather),
         )
 
         return AcquisitionResult(
