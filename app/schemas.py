@@ -117,7 +117,7 @@ class POI(BaseModel):
     visit_duration_min: int = 60
     cuisine: str | None = None
     tags: list[str] = []
-    source: Literal["osm", "serpapi"] = "osm"
+    source: Literal["osm", "serpapi", "synthetic"] = "osm"
 
 
 class Event(BaseModel):

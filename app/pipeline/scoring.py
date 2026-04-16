@@ -27,6 +27,7 @@ _INTEREST_BOOST = {
 }
 
 _BUDGET_PRICE_TARGET = {"budget": 1, "moderate": 2, "comfortable": 3, "luxury": 4}
+_MUST_VISIT_BOOST = 200
 
 PACE_RANGES = {"relaxed": (2, 4), "moderate": (3, 5), "packed": (4, 7)}
 
@@ -94,6 +95,7 @@ def _score_poi(
 def _filter_restaurants(
     pois: list[POI],
     avoid_cuisines: list[str],
+    must_visit_names: list[str] | None = None,
 ) -> list[POI]:
     """Filter restaurant-category POIs by cuisine avoidance list."""
     if not avoid_cuisines:
@@ -107,6 +109,11 @@ def _filter_restaurants(
             filtered.append(poi)
             continue
 
+        # never filter out must_visit POIs
+        if _is_must_visit(poi, must_visit_names or []):
+            filtered.append(poi)
+            continue
+
         cuisine = (poi.cuisine or "").lower()
         if cuisine and any(a in cuisine for a in avoid_lower):
             continue
@@ -114,6 +121,20 @@ def _filter_restaurants(
         filtered.append(poi)
 
     return filtered
+
+
+def _is_must_visit(poi: POI, must_visit_names: list[str]) -> bool:
+    """Check if a POI matches any must_visit name."""
+    if "must_visit" in poi.tags:
+        return True
+    if not must_visit_names:
+        return False
+    poi_lower = poi.name.lower()
+    for name in must_visit_names:
+        name_lower = name.lower()
+        if name_lower in poi_lower or (len(poi_lower) >= 4 and poi_lower in name_lower):
+            return True
+    return False
 
 
 def score_and_filter(
@@ -126,16 +147,27 @@ def score_and_filter(
     budget_level = extraction.budget_level
     pace = extraction.pace
     cuisine_prefs = extraction.meals.cuisine_preferences or []
+    must_visit_names = extraction.constraints.must_visit
 
-    # filter
+    # filter — never filter out must_visit POIs
     pois = [
         p for p in acquisition.pois
-        if p.category not in avoid_cats and p.subcategory not in avoid_cats
+        if (p.category not in avoid_cats and p.subcategory not in avoid_cats)
+        or _is_must_visit(p, must_visit_names)
     ]
-    pois = _filter_restaurants(pois, extraction.meals.avoid_cuisines)
+    pois = _filter_restaurants(pois, extraction.meals.avoid_cuisines, must_visit_names)
 
     # score
     scored = [(poi, _score_poi(poi, interests, budget_level, cuisine_prefs)) for poi in pois]
+
+    # must_visit boost — ensure these POIs rank at the top
+    if must_visit_names:
+        boosted = []
+        for poi, score in scored:
+            if _is_must_visit(poi, must_visit_names):
+                score += _MUST_VISIT_BOOST
+            boosted.append((poi, score))
+        scored = boosted
 
     # dietary restriction boost — surface restaurants matching user's dietary needs
     dietary = extraction.constraints.dietary_restrictions
@@ -157,19 +189,20 @@ def score_and_filter(
     max_per_day = PACE_RANGES.get(pace, (3, 5))[1]
     cap = min(max_per_day * num_days * 2, 50)  # 2x headroom for the solver
 
-    # ensure category diversity — don't let attractions crowd out restaurants
+    # must_visit POIs always go in first, bypassing category caps
     result: list[tuple[POI, float]] = []
     cat_counts: dict[str, int] = {}
     cat_caps = {"attraction": cap // 2, "restaurant": max(num_days * 2, 6), "nightlife": num_days}
 
     for poi, score in scored:
+        is_mv = _is_must_visit(poi, must_visit_names)
         cat = poi.category
         cat_limit = cat_caps.get(cat, cap // 4)
-        if cat_counts.get(cat, 0) >= cat_limit:
+        if not is_mv and cat_counts.get(cat, 0) >= cat_limit:
             continue
         result.append((poi, score))
         cat_counts[cat] = cat_counts.get(cat, 0) + 1
-        if len(result) >= cap:
+        if not is_mv and len(result) >= cap:
             break
 
     log.info(
