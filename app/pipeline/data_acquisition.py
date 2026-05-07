@@ -1029,12 +1029,18 @@ async def _fetch_serp_flights(
         return []
     if not extraction.dates.start:
         return []
-    # skip domestic trips
-    if origin_country.lower() == extraction.destination.country.lower():
-        return []
 
     dest_city = extraction.destination.city
     dest_country = extraction.destination.country
+
+    # Skip flights only when origin == destination city; long-haul domestic
+    # trips (e.g. SFO→JFK) still need flight options. Same-city local trips
+    # are already filtered by the upstream is_local check in acquire().
+    if (
+        origin_city.lower() == dest_city.lower()
+        and origin_country.lower() == dest_country.lower()
+    ):
+        return []
 
     # resolve both cities to IATA codes (parallel)
     dep_iata, arr_iata = await asyncio.gather(
