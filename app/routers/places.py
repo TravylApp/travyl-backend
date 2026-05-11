@@ -31,6 +31,20 @@ _CATEGORY_QUERIES = {
     "entertainment": "entertainment",
     "cafe": "cafes coffee shops",
     "hotel": "hotels",
+    "bar": "bars",
+    "museum": "museums",
+    "park": "parks",
+    "beach": "beach",
+    "casino": "casino",
+    "night_club": "night club nightclub",
+    "spa": "spa",
+    "pool": "swimming pool",
+    "amusement_park": "amusement park",
+    "bowling_alley": "bowling alley",
+    "movie_theater": "movie theater cinema",
+    "zoo": "zoo",
+    "aquarium": "aquarium",
+    "gym": "gym fitness center",
 }
 
 _CATEGORY_DEFAULTS = {
@@ -41,6 +55,20 @@ _CATEGORY_DEFAULTS = {
     "entertainment": ("entertainment", "theatre"),
     "cafe": ("restaurant", "cafe"),
     "hotel": ("attraction", "attraction"),
+    "bar": ("nightlife", "bar"),
+    "museum": ("cultural", "museum"),
+    "park": ("nature", "park"),
+    "beach": ("nature", "beach"),
+    "casino": ("entertainment", "casino"),
+    "night_club": ("nightlife", "nightclub"),
+    "spa": ("entertainment", "spa"),
+    "pool": ("entertainment", "swimming"),
+    "amusement_park": ("entertainment", "amusement_park"),
+    "bowling_alley": ("entertainment", "bowling"),
+    "movie_theater": ("entertainment", "cinema"),
+    "zoo": ("nature", "zoo"),
+    "aquarium": ("nature", "aquarium"),
+    "gym": ("entertainment", "gym"),
 }
 
 _SUBCAT_KEYWORDS = {
@@ -49,6 +77,10 @@ _SUBCAT_KEYWORDS = {
     "bar": "bar", "pub": "pub", "club": "nightclub",
     "cafe": "cafe", "coffee": "cafe", "mall": "mall",
     "market": "marketplace", "beach": "beach", "garden": "garden",
+    "casino": "casino", "spa": "spa", "pool": "swimming",
+    "amusement_park": "amusement_park", "bowling_alley": "bowling",
+    "movie_theater": "cinema", "zoo": "zoo", "aquarium": "aquarium",
+    "gym": "gym", "fitness": "gym", "nightclub": "nightclub",
 }
 
 _VISIT_DURATIONS = {
@@ -59,6 +91,9 @@ _VISIT_DURATIONS = {
     "park": 45, "garden": 45, "beach": 120,
     "place_of_worship": 30, "theatre": 150,
     "mall": 90, "marketplace": 60,
+    "casino": 180, "spa": 120, "swimming": 90,
+    "amusement_park": 300, "bowling": 90, "cinema": 150,
+    "zoo": 180, "aquarium": 120, "gym": 90,
 }
 
 _SUBCATEGORY_TAGS = {
@@ -76,6 +111,15 @@ _SUBCATEGORY_TAGS = {
     "beach": ["beach", "relaxation", "nature"],
     "mall": ["shopping"],
     "marketplace": ["shopping", "food"],
+    "casino": ["entertainment", "nightlife"],
+    "spa": ["relaxation", "wellness"],
+    "swimming": ["activity", "relaxation"],
+    "amusement_park": ["entertainment", "family", "activity"],
+    "bowling": ["entertainment", "activity"],
+    "cinema": ["entertainment", "culture"],
+    "zoo": ["nature", "family", "animals"],
+    "aquarium": ["nature", "family", "animals"],
+    "gym": ["fitness", "wellness"],
 }
 
 # Page queries for suggest endpoint — rotated per page for variety
@@ -227,6 +271,79 @@ async def nearby_places(
             break
 
     log.info("Nearby: %d results at (%.4f, %.4f) category=%s", len(pois), lat, lng, category)
+    return pois
+
+
+# ---------------------------------------------------------------------------
+# GET /api/places/search — NLP place search with geo-scoping
+# ---------------------------------------------------------------------------
+
+@router.get("/search", response_model=list[POI])
+async def search_places(
+    q: str = Query(..., description="Natural language search query (e.g., 'casinos in Las Vegas')"),
+    lat: float | None = Query(None, description="Latitude for geo-scoping"),
+    lng: float | None = Query(None, description="Longitude for geo-scoping"),
+    location: str | None = Query(None, description="Location name (e.g., 'Las Vegas, NV')"),
+    limit: int = Query(20, ge=1, le=50),
+):
+    """NLP search for places using SerpAPI google_local engine.
+
+    Supports geo-scoping via lat/lng or location name for contextual relevance.
+    """
+    if not settings.serpapi_key:
+        return []
+
+    params: dict = {"engine": "google_local", "q": q}
+
+    # Build location context for geo-scoping
+    if lat is not None and lng is not None:
+        # Use coordinates for precise geo-scoping
+        zoom = _radius_to_zoom(5.0)  # ~5km radius
+        params["ll"] = f"@{lat},{lng},{zoom}z"
+    elif location:
+        params["location"] = location
+
+    data = await _serpapi(params)
+    if not data:
+        return []
+
+    pois: list[POI] = []
+    for item in data.get("local_results", []):
+        title = item.get("title")
+        gps = item.get("gps_coordinates", {})
+        if not title:
+            continue
+
+        place_id = item.get("place_id", "")
+        item_type = item.get("type") or ""
+
+        # Infer category from place type
+        cat = _infer_category(item_type, "attraction")
+        subcat = _detect_subcategory(item_type, cat)
+
+        pois.append(POI(
+            id=f"serp_{place_id}" if place_id else f"serp_{title[:30]}",
+            name=title,
+            lat=gps.get("latitude", 0),
+            lng=gps.get("longitude", 0),
+            category=cat,
+            subcategory=subcat,
+            rating=item.get("rating"),
+            review_count=item.get("reviews"),
+            price_level=_parse_price_level(item.get("price")),
+            opening_hours=item.get("operating_hours"),
+            description=item.get("description"),
+            photo_url=item.get("thumbnail"),
+            website=item.get("website"),
+            visit_duration_min=_VISIT_DURATIONS.get(subcat, 60),
+            tags=_SUBCATEGORY_TAGS.get(subcat, []),
+            source="serpapi",
+        ))
+
+        if len(pois) >= limit:
+            break
+
+    log.info("Search: %d results for '%s' at (%.4f, %.4f)", len(pois), q, lat or 0, lng or 0)
     return pois
 
 
